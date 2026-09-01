@@ -1,0 +1,34 @@
+# Build
+build/
+.gradle/
+out/
+*.class
+*.jar
+*.war
+*.ear
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Logs
+*.log
+logs/
+build/reports/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Env
+.env
+.env.local
+*.pem
+
+# Local infra
+infra/local/

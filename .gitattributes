@@ -1,0 +1,15 @@
+# Force LF line endings for source files; CRLF stays for Windows scripts.
+* text=auto eol=lf
+
+*.bat        text eol=crlf
+*.cmd        text eol=crlf
+*.ps1        text eol=crlf
+*.sh         text eol=lf
+
+# Binary files - don't diff
+*.png        binary
+*.jpg        binary
+*.gif        binary
+*.ico        binary
+*.jar        binary
+*.class      binary
