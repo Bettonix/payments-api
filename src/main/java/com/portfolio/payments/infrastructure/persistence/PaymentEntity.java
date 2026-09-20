@@ -84,6 +84,18 @@ public class PaymentEntity {
         return e;
     }
 
+    /**
+     * Updates the mutable fields from the domain aggregate in-place.
+     * Identity (id, idempotency_key, payer_id, payee_id, amount, currency,
+     * created_at) is preserved — only status, failure_reason, and updated_at
+     * are mutated. This keeps the JPA {@code @Version} counter coherent.
+     */
+    public void updateFrom(Payment p) {
+        this.status = p.status();
+        this.failureReason = p.failureReason();
+        this.updatedAt = p.updatedAt();
+    }
+
     public Payment toDomain() {
         return Payment.rehydrate(
             id, idempotencyKey, payerId, payeeId,

@@ -83,8 +83,7 @@ public class Payment {
 
     private void transitionTo(PaymentStatus next, String reason) {
         if (!this.status.canTransitionTo(next)) {
-            throw new IllegalStateException(
-                "invalid transition: " + this.status + " -> " + next);
+            throw new InvalidPaymentTransitionException(this.id, this.status, next);
         }
         this.status = next;
         this.updatedAt = Instant.now();

@@ -1,5 +1,6 @@
 package com.portfolio.payments;
 
+import com.portfolio.payments.domain.InvalidPaymentTransitionException;
 import com.portfolio.payments.domain.Money;
 import com.portfolio.payments.domain.Payment;
 import com.portfolio.payments.domain.PaymentStatus;
@@ -62,14 +63,14 @@ class PaymentDomainTest {
         assertEquals(PaymentStatus.AUTHORIZED, p.status());
 
         // cannot settle directly from authorized
-        assertThrows(IllegalStateException.class, p::settle);
+        assertThrows(InvalidPaymentTransitionException.class, p::settle);
 
         p.capture();
         p.settle();
         assertEquals(PaymentStatus.SETTLED, p.status());
 
         // terminal state — no transitions out
-        assertThrows(IllegalStateException.class, () -> p.fail("x"));
+        assertThrows(InvalidPaymentTransitionException.class, () -> p.fail("x"));
     }
 
     @Test
