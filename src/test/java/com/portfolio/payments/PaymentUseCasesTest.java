@@ -4,6 +4,8 @@ import com.portfolio.payments.application.GetPaymentUseCase;
 import com.portfolio.payments.application.TransitionPaymentUseCase;
 import com.portfolio.payments.domain.InvalidPaymentTransitionException;
 import com.portfolio.payments.domain.Money;
+import com.portfolio.payments.domain.OutboxEvent;
+import com.portfolio.payments.domain.OutboxRepository;
 import com.portfolio.payments.domain.Payment;
 import com.portfolio.payments.domain.PaymentNotFoundException;
 import com.portfolio.payments.domain.PaymentRepository;
@@ -12,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,14 +36,16 @@ import static org.junit.jupiter.api.Assertions.*;
 class PaymentUseCasesTest {
 
     private InMemoryPaymentRepository repo;
+    private InMemoryOutboxRepository outbox;
     private GetPaymentUseCase getUseCase;
     private TransitionPaymentUseCase transitionUseCase;
 
     @BeforeEach
     void setUp() {
         repo = new InMemoryPaymentRepository();
+        outbox = new InMemoryOutboxRepository();
         getUseCase = new GetPaymentUseCase(repo);
-        transitionUseCase = new TransitionPaymentUseCase(repo);
+        transitionUseCase = new TransitionPaymentUseCase(repo, outbox);
     }
 
     @Test
@@ -107,6 +112,23 @@ class PaymentUseCasesTest {
             () -> transitionUseCase.execute(UUID.randomUUID(), TransitionPaymentUseCase.Transition.AUTHORIZE, null));
     }
 
+    @Test
+    void transitionEmitsOutboxEvent() {
+        Payment created = Payment.create("k5", UUID.randomUUID(), UUID.randomUUID(), Money.of(100, "BRL"));
+        repo.save(created);
+
+        transitionUseCase.execute(created.id(), TransitionPaymentUseCase.Transition.AUTHORIZE, null);
+
+        List<OutboxEvent> pending = outbox.fetchPendingBatch(10);
+        assertEquals(1, pending.size(), "transition should emit one outbox event");
+        OutboxEvent ev = pending.get(0);
+        assertEquals("Payment", ev.aggregateType());
+        assertEquals("PaymentTransitioned", ev.eventType());
+        assertEquals(created.id(), ev.aggregateId());
+        assertTrue(ev.payload().contains("\"from\":\"PENDING\""));
+        assertTrue(ev.payload().contains("\"to\":\"AUTHORIZED\""));
+    }
+
     /** Minimal in-memory implementation of the domain port for unit tests. */
     private static class InMemoryPaymentRepository implements PaymentRepository {
         private final Map<UUID, Payment> store = new HashMap<>();
@@ -127,6 +149,26 @@ class PaymentUseCasesTest {
         @Override
         public Optional<Payment> findByIdempotencyKey(String key) {
             return Optional.ofNullable(byKey.get(key));
+        }
+    }
+
+    /** Minimal in-memory outbox for unit tests. */
+    private static class InMemoryOutboxRepository implements OutboxRepository {
+        private final Map<java.util.UUID, OutboxEvent> store = new HashMap<>();
+
+        @Override
+        public OutboxEvent save(OutboxEvent event) {
+            store.put(event.id(), event);
+            return event;
+        }
+
+        @Override
+        public List<OutboxEvent> fetchPendingBatch(int limit) {
+            return store.values().stream()
+                .filter(e -> e.status() == OutboxEvent.Status.PENDING)
+                .sorted(java.util.Comparator.comparing(OutboxEvent::createdAt))
+                .limit(limit)
+                .toList();
         }
     }
 }

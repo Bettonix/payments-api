@@ -1,5 +1,7 @@
 package com.portfolio.payments.application;
 
+import com.portfolio.payments.domain.OutboxEvent;
+import com.portfolio.payments.domain.OutboxRepository;
 import com.portfolio.payments.domain.Payment;
 import com.portfolio.payments.domain.PaymentNotFoundException;
 import com.portfolio.payments.domain.PaymentRepository;
@@ -18,9 +20,7 @@ import java.util.UUID;
  * (which enforces the state machine), then persists. The whole flow runs
  * in a single transaction so concurrent callers see a consistent state.</p>
  *
- * <p>If the requested transition is invalid for the current state, the
- * aggregate throws {@link com.portfolio.payments.domain.InvalidPaymentTransitionException}
- * and the transaction rolls back.</p>
+ * <p>Emits a {@code PaymentTransitioned} outbox event in the same TX.</p>
  */
 @Service
 public class TransitionPaymentUseCase {
@@ -28,9 +28,11 @@ public class TransitionPaymentUseCase {
     private static final Logger log = LoggerFactory.getLogger(TransitionPaymentUseCase.class);
 
     private final PaymentRepository repository;
+    private final OutboxRepository outbox;
 
-    public TransitionPaymentUseCase(PaymentRepository repository) {
+    public TransitionPaymentUseCase(PaymentRepository repository, OutboxRepository outbox) {
         this.repository = repository;
+        this.outbox = outbox;
     }
 
     @Transactional
@@ -41,6 +43,13 @@ public class TransitionPaymentUseCase {
         PaymentStatus before = payment.status();
         applyTransition(payment, transition, reason);
         Payment saved = repository.save(payment);
+
+        outbox.save(OutboxEvent.create("Payment", saved.id(),
+            "PaymentTransitioned",
+            "{\"id\":\"" + saved.id() + "\","
+            + "\"from\":\"" + before + "\","
+            + "\"to\":\"" + saved.status() + "\","
+            + "\"reason\":\"" + (reason == null ? "" : reason) + "\"}"));
 
         log.info("payment transitioned id={} {} -> {} via {}",
             saved.id(), before, saved.status(), transition);

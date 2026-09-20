@@ -1,6 +1,8 @@
 package com.portfolio.payments.application;
 
 import com.portfolio.payments.domain.Money;
+import com.portfolio.payments.domain.OutboxEvent;
+import com.portfolio.payments.domain.OutboxRepository;
 import com.portfolio.payments.domain.Payment;
 import com.portfolio.payments.domain.PaymentRepository;
 import org.slf4j.Logger;
@@ -16,6 +18,9 @@ import java.util.UUID;
  * <p>Se o header {@code Idempotency-Key} já existir, devolve o payment
  * existente em vez de criar duplicado. Esse é o coração do contrato
  * idempotency-safe: cliente pode retentar com segurança.</p>
+ *
+ * <p>Emite também um evento outbox {@code PaymentCreated} na mesma
+ * transação, para publicação assíncrona via {@link com.portfolio.payments.application.outbox.OutboxRelay}.</p>
  */
 @Service
 public class CreatePaymentUseCase {
@@ -23,9 +28,11 @@ public class CreatePaymentUseCase {
     private static final Logger log = LoggerFactory.getLogger(CreatePaymentUseCase.class);
 
     private final PaymentRepository repository;
+    private final OutboxRepository outbox;
 
-    public CreatePaymentUseCase(PaymentRepository repository) {
+    public CreatePaymentUseCase(PaymentRepository repository, OutboxRepository outbox) {
         this.repository = repository;
+        this.outbox = outbox;
     }
 
     @Transactional
@@ -38,10 +45,28 @@ public class CreatePaymentUseCase {
             .orElseGet(() -> {
                 Payment payment = Payment.create(idempotencyKey, payerId, payeeId, amount);
                 Payment saved = repository.save(payment);
+
+                // outbox event in the same TX — guaranteed at-least-once
+                String payload = buildCreatedPayload(saved);
+                outbox.save(OutboxEvent.create("Payment", saved.id(), "PaymentCreated", payload));
+
                 log.info("created payment id={} amount={} {}",
                     saved.id(), saved.amount().amount(), saved.amount().currency().getCurrencyCode());
                 return Result.created(saved);
             });
+    }
+
+    private String buildCreatedPayload(Payment p) {
+        // Minimal hand-rolled JSON to avoid pulling a JSON lib into the
+        // application layer. Postgres stores it as jsonb regardless.
+        return "{"
+            + "\"id\":\"" + p.id() + "\","
+            + "\"payerId\":\"" + p.payerId() + "\","
+            + "\"payeeId\":\"" + p.payeeId() + "\","
+            + "\"amount\":\"" + p.amount().amount().toPlainString() + "\","
+            + "\"currency\":\"" + p.amount().currency().getCurrencyCode() + "\","
+            + "\"status\":\"" + p.status().name() + "\""
+            + "}";
     }
 
     public sealed interface Result {
