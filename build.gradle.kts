@@ -54,8 +54,8 @@ dependencies {
     runtimeOnly("org.postgresql:postgresql")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 
-    // kafka (added when Kafka is ready)
-    // implementation("org.springframework.kafka:spring-kafka")
+    // kafka
+    implementation("org.springframework.kafka:spring-kafka")
 
     // test
     testImplementation("org.springframework.boot:spring-boot-starter-test")

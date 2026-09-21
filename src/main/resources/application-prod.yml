@@ -15,10 +15,21 @@ spring:
     redis:
       host: ${REDIS_HOST:redis}
       port: ${REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
+      properties:
+        delivery.timeout.ms: 10000
+        request.timeout.ms: 5000
 
 app:
   outbox:
     relay-interval-ms: 2000
+    publisher: kafka
 
 logging:
   level:
