@@ -1,0 +1,26 @@
+# Profile dev — Postgres local + Redis local, log SQL visível.
+# Rodar com: --spring.profiles.active=dev (ou SPRING_PROFILES_ACTIVE=dev)
+
+spring:
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:127.0.0.1}:${POSTGRES_PORT:5432}/${POSTGRES_DB:payments_api}
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      pool-name: payments-pool
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+
+app:
+  outbox:
+    relay-interval-ms: 5000
+
+logging:
+  level:
+    com.portfolio.payments: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE

@@ -1,0 +1,19 @@
+# Profile test — Postgres Testcontainers + outbox relay desligado.
+# Usado pelos testes de integração que sobem @SpringBootTest.
+
+spring:
+  flyway:
+    clean-disabled: false
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+app:
+  outbox:
+    # relay desligado nos testes — caso contrário fica tentando drenar durante o @SpringBootTest
+    relay-interval-ms: 999999999
+
+logging:
+  level:
+    com.portfolio.payments: INFO
+    org.springframework.test: INFO

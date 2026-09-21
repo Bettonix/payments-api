@@ -1,0 +1,26 @@
+# Profile prod — sane defaults pra produção.
+# Sobrescreve via env vars (K8s ConfigMap/Secret na vida real).
+
+spring:
+  datasource:
+    url: ${POSTGRES_URL:jdbc:postgresql://127.0.0.1:5432/payments_api}
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:}
+    hikari:
+      maximum-pool-size: 50
+      minimum-idle: 10
+      pool-name: payments-prod-pool
+      connection-timeout: 5000
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+
+app:
+  outbox:
+    relay-interval-ms: 2000
+
+logging:
+  level:
+    com.portfolio.payments: INFO
+    org.hibernate.SQL: WARN
