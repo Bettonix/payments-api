@@ -1,5 +1,6 @@
 package com.portfolio.payments.interfaces.rest;
 
+import com.portfolio.payments.domain.IdempotencyKeyConflictException;
 import com.portfolio.payments.domain.InvalidPaymentTransitionException;
 import com.portfolio.payments.domain.PaymentNotFoundException;
 import org.slf4j.Logger;
@@ -30,6 +31,17 @@ public class ApiExceptionHandler {
     public ResponseEntity<Map<String, Object>> handleNotFound(PaymentNotFoundException ex) {
         log.debug("payment not found: {}", ex.getMessage());
         return error(HttpStatus.NOT_FOUND, "payment_not_found", ex.getMessage());
+    }
+
+    @ExceptionHandler(IdempotencyKeyConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleIdempotencyConflict(IdempotencyKeyConflictException ex) {
+        // 409 Conflict: a request raced with another using the same Idempotency-Key.
+        // Cliente deve fazer GET /payments/{id} (após retry com backoff) ou re-resolver o estado.
+        log.info("idempotency conflict: key={}", ex.idempotencyKey());
+        Map<String, Object> body = baseBody(HttpStatus.CONFLICT, "idempotency_conflict", ex.getMessage());
+        body.put("idempotencyKey", ex.idempotencyKey());
+        body.put("hint", "retry with exponential backoff, then GET /payments/{id} to resolve state");
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     }
 
     @ExceptionHandler(InvalidPaymentTransitionException.class)

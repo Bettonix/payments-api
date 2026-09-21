@@ -1,6 +1,7 @@
 package com.portfolio.payments.application;
 
 import com.portfolio.payments.application.metrics.PaymentMetrics;
+import com.portfolio.payments.domain.IdempotencyKeyConflictException;
 import com.portfolio.payments.domain.Money;
 import com.portfolio.payments.domain.OutboxEvent;
 import com.portfolio.payments.domain.OutboxRepository;
@@ -8,6 +9,7 @@ import com.portfolio.payments.domain.Payment;
 import com.portfolio.payments.domain.PaymentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,7 +50,15 @@ public class CreatePaymentUseCase {
             })
             .orElseGet(() -> {
                 Payment payment = Payment.create(idempotencyKey, payerId, payeeId, amount);
-                Payment saved = repository.save(payment);
+                Payment saved;
+                try {
+                    saved = repository.save(payment);
+                } catch (DataIntegrityViolationException ex) {
+                    // Race do SELECT+INSERT: outra thread criou com mesma Idempotency-Key
+                    // entre nosso findByIdempotencyKey e nosso save. Sinaliza o conflito.
+                    log.info("idempotency race detected on key={}", idempotencyKey);
+                    throw new IdempotencyKeyConflictException(idempotencyKey);
+                }
 
                 // outbox event in the same TX — guaranteed at-least-once
                 String payload = buildCreatedPayload(saved);
