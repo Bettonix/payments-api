@@ -1,5 +1,6 @@
 package com.portfolio.payments.application;
 
+import com.portfolio.payments.application.metrics.PaymentMetrics;
 import com.portfolio.payments.domain.Money;
 import com.portfolio.payments.domain.OutboxEvent;
 import com.portfolio.payments.domain.OutboxRepository;
@@ -29,10 +30,12 @@ public class CreatePaymentUseCase {
 
     private final PaymentRepository repository;
     private final OutboxRepository outbox;
+    private final PaymentMetrics metrics;
 
-    public CreatePaymentUseCase(PaymentRepository repository, OutboxRepository outbox) {
+    public CreatePaymentUseCase(PaymentRepository repository, OutboxRepository outbox, PaymentMetrics metrics) {
         this.repository = repository;
         this.outbox = outbox;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -40,6 +43,7 @@ public class CreatePaymentUseCase {
         return repository.findByIdempotencyKey(idempotencyKey)
             .map(existing -> {
                 log.info("idempotent replay: key={} paymentId={}", idempotencyKey, existing.id());
+                metrics.recordReplayed();
                 return Result.replayed(existing);
             })
             .orElseGet(() -> {
@@ -52,6 +56,7 @@ public class CreatePaymentUseCase {
 
                 log.info("created payment id={} amount={} {}",
                     saved.id(), saved.amount().amount(), saved.amount().currency().getCurrencyCode());
+                metrics.recordCreated();
                 return Result.created(saved);
             });
     }

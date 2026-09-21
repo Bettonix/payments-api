@@ -1,5 +1,6 @@
 package com.portfolio.payments.application;
 
+import com.portfolio.payments.application.metrics.PaymentMetrics;
 import com.portfolio.payments.domain.OutboxEvent;
 import com.portfolio.payments.domain.OutboxRepository;
 import com.portfolio.payments.domain.Payment;
@@ -29,10 +30,12 @@ public class TransitionPaymentUseCase {
 
     private final PaymentRepository repository;
     private final OutboxRepository outbox;
+    private final PaymentMetrics metrics;
 
-    public TransitionPaymentUseCase(PaymentRepository repository, OutboxRepository outbox) {
+    public TransitionPaymentUseCase(PaymentRepository repository, OutboxRepository outbox, PaymentMetrics metrics) {
         this.repository = repository;
         this.outbox = outbox;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -53,6 +56,7 @@ public class TransitionPaymentUseCase {
 
         log.info("payment transitioned id={} {} -> {} via {}",
             saved.id(), before, saved.status(), transition);
+        metrics.recordTransition();
 
         return saved;
     }

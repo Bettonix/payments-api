@@ -2,6 +2,7 @@ package com.portfolio.payments;
 
 import com.portfolio.payments.application.GetPaymentUseCase;
 import com.portfolio.payments.application.TransitionPaymentUseCase;
+import com.portfolio.payments.application.metrics.PaymentMetrics;
 import com.portfolio.payments.domain.InvalidPaymentTransitionException;
 import com.portfolio.payments.domain.Money;
 import com.portfolio.payments.domain.OutboxEvent;
@@ -10,6 +11,7 @@ import com.portfolio.payments.domain.Payment;
 import com.portfolio.payments.domain.PaymentNotFoundException;
 import com.portfolio.payments.domain.PaymentRepository;
 import com.portfolio.payments.domain.PaymentStatus;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +39,7 @@ class PaymentUseCasesTest {
 
     private InMemoryPaymentRepository repo;
     private InMemoryOutboxRepository outbox;
+    private PaymentMetrics metrics;
     private GetPaymentUseCase getUseCase;
     private TransitionPaymentUseCase transitionUseCase;
 
@@ -44,8 +47,9 @@ class PaymentUseCasesTest {
     void setUp() {
         repo = new InMemoryPaymentRepository();
         outbox = new InMemoryOutboxRepository();
+        metrics = new PaymentMetrics(new SimpleMeterRegistry());
         getUseCase = new GetPaymentUseCase(repo);
-        transitionUseCase = new TransitionPaymentUseCase(repo, outbox);
+        transitionUseCase = new TransitionPaymentUseCase(repo, outbox, metrics);
     }
 
     @Test
