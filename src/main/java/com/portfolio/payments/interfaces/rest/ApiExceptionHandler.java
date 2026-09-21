@@ -7,9 +7,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -60,6 +64,34 @@ public class ApiExceptionHandler {
             .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
             .collect(Collectors.joining("; "));
         return error(HttpStatus.BAD_REQUEST, "validation_failed", message);
+    }
+
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<Map<String, Object>> handleHandlerMethodValidation(HandlerMethodValidationException ex) {
+        // Bean Validation em @RequestHeader, @PathVariable, @RequestParam
+        // (versus MethodArgumentNotValidException que cobre @RequestBody)
+        String message = ex.getAllValidationResults().stream()
+            .flatMap(vr -> vr.getResolvableErrors().stream())
+            .map(err -> err.getDefaultMessage())
+            .collect(Collectors.joining("; "));
+        return error(HttpStatus.BAD_REQUEST, "validation_failed", message);
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ResponseEntity<Map<String, Object>> handleMissingHeader(MissingRequestHeaderException ex) {
+        return error(HttpStatus.BAD_REQUEST, "missing_header",
+            "required header '" + ex.getHeaderName() + "' is missing");
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Map<String, Object>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        return error(HttpStatus.BAD_REQUEST, "invalid_argument",
+            "parameter '" + ex.getName() + "' has invalid value");
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> handleNotReadable(HttpMessageNotReadableException ex) {
+        return error(HttpStatus.BAD_REQUEST, "malformed_body", "request body is malformed or missing");
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
