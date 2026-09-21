@@ -160,5 +160,12 @@ class CreatePaymentUseCaseTest {
                 .limit(limit)
                 .toList();
         }
+
+        @Override
+        public long countPending() {
+            return store.values().stream()
+                .filter(e -> e.status() == OutboxEvent.Status.PENDING)
+                .count();
+        }
     }
 }

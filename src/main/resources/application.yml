@@ -38,12 +38,15 @@ management:
   endpoints:
     web:
       exposure:
-        include: health, info, prometheus
+        include: health, info, prometheus, circuitbreakers, circuitbreakerevents
   endpoint:
     health:
       probes:
         enabled: true
       show-details: when_authorized
+  health:
+    circuitbreakers:
+      enabled: true
   metrics:
     tags:
       application: ${spring.application.name}
@@ -58,6 +61,14 @@ resilience4j:
         waitDurationInOpenState: 30s
         permittedNumberOfCallsInHalfOpenState: 10
         automaticTransitionFromOpenToHalfOpenEnabled: true
+    instances:
+      outboxPublisher:
+        baseConfig: default
+        # publisher de eventos: queremos ser mais sensíveis — 5 falhas em 10 calls já abre
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        # em half-open, só 3 calls de prova antes de fechar de novo
+        permittedNumberOfCallsInHalfOpenState: 3
 
 logging:
   pattern:

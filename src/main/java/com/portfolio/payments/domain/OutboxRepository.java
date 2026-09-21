@@ -14,4 +14,7 @@ import java.util.UUID;
 public interface OutboxRepository {
     OutboxEvent save(OutboxEvent event);
     List<OutboxEvent> fetchPendingBatch(int limit);
+    /** Quantos eventos PENDING estão na fila. Usado pelo circuit breaker
+     *  pra logar visibilidade quando o publisher está fora. */
+    long countPending();
 }

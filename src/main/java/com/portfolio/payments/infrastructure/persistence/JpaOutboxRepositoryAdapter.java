@@ -33,4 +33,10 @@ class JpaOutboxRepositoryAdapter implements OutboxRepository {
             .map(OutboxEventEntity::toDomain)
             .toList();
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public long countPending() {
+        return delegate.countPending();
+    }
 }

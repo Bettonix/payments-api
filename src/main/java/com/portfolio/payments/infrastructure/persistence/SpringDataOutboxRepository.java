@@ -17,4 +17,7 @@ public interface SpringDataOutboxRepository extends JpaRepository<OutboxEventEnt
         FOR UPDATE SKIP LOCKED
         """, nativeQuery = true)
     List<OutboxEventEntity> fetchPendingForUpdate(@Param("limit") int limit);
+
+    @Query(value = "SELECT COUNT(*) FROM outbox_events WHERE status = 'PENDING'", nativeQuery = true)
+    long countPending();
 }

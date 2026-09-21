@@ -2,6 +2,7 @@ package com.portfolio.payments.application.outbox;
 
 import com.portfolio.payments.domain.OutboxEvent;
 import com.portfolio.payments.domain.OutboxRepository;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -22,6 +23,7 @@ public class OutboxRelay {
     private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
     private static final int BATCH_SIZE = 50;
     private static final int MAX_ATTEMPTS = 5;
+    public static final String OUTBOX_CB = "outboxPublisher";
 
     private final OutboxRepository repository;
     private final OutboxPublisher publisher;
@@ -32,6 +34,7 @@ public class OutboxRelay {
     }
 
     @Scheduled(fixedDelayString = "${app.outbox.relay-interval-ms:5000}")
+    @CircuitBreaker(name = OUTBOX_CB, fallbackMethod = "drainWhenOpen")
     @Transactional
     public void drain() {
         List<OutboxEvent> pending = repository.fetchPendingBatch(BATCH_SIZE);
@@ -68,5 +71,16 @@ public class OutboxRelay {
                 repository.save(event);
             }
         }
+    }
+
+    /**
+     * Fallback do circuit breaker: quando o publisher está fora (circuit aberto),
+     * não tenta publicar e sai limpo. Eventos continuam na fila PENDING pra próxima
+     * tentativa quando o circuit fechar.
+     */
+    @SuppressWarnings("unused") // invocado pelo Resilience4j via reflexão
+    private void drainWhenOpen(Throwable t) {
+        log.warn("outbox circuit breaker OPEN, skipping drain ({} pending will retry on next tick)",
+            repository.countPending());
     }
 }
