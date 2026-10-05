@@ -42,44 +42,44 @@ O núcleo de negócio é totalmente desacoplado da infraestrutura através de po
 
 ```mermaid
 graph TD
-    subgraph ClientLayer [Consumidores & Clientes]
-        SPA[Web SPA / Mobile]
-        Partner[Merchant API Client]
-        Ops[Backoffice / Ops Admin]
+    subgraph ClientLayer ["Consumidores e Clientes"]
+        SPA["Web SPA / Mobile"]
+        Partner["Merchant API Client"]
+        Ops["Backoffice / Ops Admin"]
     end
 
-    subgraph InterfaceAdapters [Driving Adapters / Interfaces REST v1]
-        PC[PaymentController]
-        AEH[ApiExceptionHandler / RFC 9457]
-        SEC[SecurityConfig / OAuth2 Resource Server]
-        Swagger[OpenAPI 3 / Springdoc]
+    subgraph InterfaceAdapters ["Driving Adapters / Interfaces REST v1"]
+        PC["PaymentController"]
+        AEH["ApiExceptionHandler (RFC 9457)"]
+        SEC["SecurityConfig (OAuth2 Resource Server)"]
+        Swagger["OpenAPI 3 / Springdoc"]
     end
 
-    subgraph ApplicationLayer [Application Layer / Use Cases]
-        CP[CreatePaymentUseCase]
-        TP[TransitionPaymentUseCase]
-        GP[GetPaymentUseCase]
-        OR[OutboxRelay]
-        RF[RequestFingerprint SHA-256]
-        PM[PaymentMetrics]
+    subgraph ApplicationLayer ["Application Layer / Use Cases"]
+        CP["CreatePaymentUseCase"]
+        TP["TransitionPaymentUseCase"]
+        GP["GetPaymentUseCase"]
+        OR["OutboxRelay"]
+        RF["RequestFingerprint (SHA-256)"]
+        PM["PaymentMetrics"]
     end
 
-    subgraph PureDomain [Pure Domain - Java 21]
-        P[Payment Aggregate Root]
-        M[Money Value Object]
-        OE[OutboxEvent Entity]
-        PE[PaymentEvent Sealed Types]
-        PR[PaymentRepository Port]
-        IS[IdempotencyStore Port]
-        CM[CurrentMerchant Port]
+    subgraph PureDomain ["Pure Domain (Java 21)"]
+        P["Payment Aggregate Root"]
+        M["Money Value Object"]
+        OE["OutboxEvent Entity"]
+        PE["PaymentEvent Sealed Types"]
+        PR["PaymentRepository Port"]
+        IS["IdempotencyStore Port"]
+        CM["CurrentMerchant Port"]
     end
 
-    subgraph DrivenAdapters [Driven Adapters / Infrastructure]
-        JPA[JpaPaymentRepositoryAdapter / PostgreSQL 16]
-        RIS[RedisIdempotencyStore / Lua CAS + Circuit Breaker]
-        KOP[KafkaOutboxPublisher / Apache Kafka 4.x KRaft]
-        JWT[JwtCurrentMerchant / Keycloak 26]
-        OTEL[OpenTelemetry Bridge / Grafana LGTM]
+    subgraph DrivenAdapters ["Driven Adapters / Infrastructure"]
+        JPA["JpaPaymentRepositoryAdapter (PostgreSQL 16)"]
+        RIS["RedisIdempotencyStore (Lua CAS + Circuit Breaker)"]
+        KOP["KafkaOutboxPublisher (Apache Kafka 4.x KRaft)"]
+        JWT["JwtCurrentMerchant (Keycloak 26)"]
+        OTEL["OpenTelemetry Bridge (Grafana LGTM)"]
     end
 
     ClientLayer --> InterfaceAdapters
@@ -103,7 +103,7 @@ Garante semântica estrita de processamento único mesmo sob rajadas massivas de
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as Cliente / Lojista
+    actor Client as Cliente (Lojista)
     participant API as PaymentController
     participant Redis as Redis (Lua CAS)
     participant DB as PostgreSQL (ACID)
@@ -116,7 +116,7 @@ sequenceDiagram
     alt Chave já concluída com mesmo Fingerprint
         Redis-->>API: COMPLETED + PaymentId
         API->>DB: Busca pagamento por ID
-        API-->>Client: HTTP 201 Created (Idempotent-Replayed: true, ETag: "v0")
+        API-->>Client: HTTP 201 Created (Idempotent-Replayed: true, ETag: v0)
     else Chave já concluída com Fingerprint DIFERENTE
         Redis-->>API: MISMATCH
         API-->>Client: HTTP 422 Unprocessable Content (RFC 9457 ProblemDetail)
@@ -125,13 +125,11 @@ sequenceDiagram
         API-->>Client: HTTP 409 Conflict (Retry-After: 1)
     else Chave Nova (Lock Adquirido com Sucesso)
         Redis-->>API: ACQUIRED (TTL: 120s)
-        rect rgb(240, 248, 255)
-            Note over API,DB: Transação Atômica PostgreSQL
-            API->>DB: INSERT payments (merchant_id, idempotency_key, ...)
-            API->>DB: INSERT outbox_events (status: PENDING, ...)
-        end
+        Note over API,DB: Transação Atômica PostgreSQL
+        API->>DB: INSERT payments (merchant_id, idempotency_key)
+        API->>DB: INSERT outbox_events (status: PENDING)
         API->>Redis: EVALSHA idempotency_cas.lua (complete, TTL: 24h)
-        API-->>Client: HTTP 201 Created (Location: /v1/payments/{id}, ETag: "v0")
+        API-->>Client: HTTP 201 Created (Location: /v1/payments/{id}, ETag: v0)
     end
 ```
 
@@ -143,23 +141,23 @@ Eliminação definitiva de dual-write. O evento de domínio é persistido na mes
 
 ```mermaid
 flowchart LR
-    subgraph Transaction [Transação Atômica Banco de Dados]
-        P[Pagamento Atualizado]
-        O[Evento Outbox Gravado]
+    subgraph Transaction ["Transação Atômica PostgreSQL"]
+        P["Pagamento Atualizado"]
+        O["Evento Outbox Gravado"]
     end
 
-    subgraph Relay [Outbox Relay Engine]
-        Worker[Poller Assíncrono com FOR UPDATE SKIP LOCKED]
+    subgraph Relay ["Outbox Relay Engine"]
+        Worker["Poller Assíncrono (SKIP LOCKED)"]
     end
 
-    subgraph KafkaCluster [Apache Kafka 4.x KRaft]
-        Topic[Tópico: payments.events<br>Chave de Partição: payment_id<br>Headers: CloudEvents v1.0 Binário]
-        DLQ[Tópico: payments.dlq<br>Dead Letter Queue com Circuit Breaker]
+    subgraph KafkaCluster ["Apache Kafka 4.x KRaft"]
+        Topic["Tópico: payments.events<br/>Headers: CloudEvents v1.0"]
+        DLQ["Tópico: payments.dlq<br/>Dead Letter Queue"]
     end
 
-    Transaction --> Relay
-    Relay -->|Entrega At-Least-Once| Topic
-    Relay -.->|Falhas Críticas / Exaustão| DLQ
+    O --> Worker
+    Worker -->|Entrega At-Least-Once| Topic
+    Worker -.->|Falhas Críticas| DLQ
 ```
 
 ---
@@ -169,12 +167,12 @@ flowchart LR
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING: POST /v1/payments
-    PENDING --> AUTHORIZED: POST /v1/payments/{id}/authorize (If-Match: "v0")
-    PENDING --> FAILED: POST /v1/payments/{id}/fail
-    PENDING --> CANCELED: POST /v1/payments/{id}/cancel
-    AUTHORIZED --> CAPTURED: POST /v1/payments/{id}/capture (If-Match: "v1")
-    AUTHORIZED --> CANCELED: POST /v1/payments/{id}/cancel
-    CAPTURED --> SETTLED: POST /v1/payments/{id}/settle (Admin Only)
+    PENDING --> AUTHORIZED: POST /authorize [If-Match v0]
+    PENDING --> FAILED: POST /fail [admin]
+    PENDING --> CANCELED: POST /cancel
+    AUTHORIZED --> CAPTURED: POST /capture [If-Match v1]
+    AUTHORIZED --> CANCELED: POST /cancel
+    CAPTURED --> SETTLED: POST /settle [admin]
     SETTLED --> [*]
     FAILED --> [*]
     CANCELED --> [*]

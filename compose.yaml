@@ -98,10 +98,13 @@ services:
       - "3000:3000"
       - "4317:4317"
       - "4318:4318"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - lgtm-data:/data
       - ./infra/grafana/dashboards:/otel-lgtm/grafana/conf/provisioning/dashboards/payments:ro
       - ./infra/grafana/payments-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/payments-dashboards.yaml:ro
+      - ./infra/grafana/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
 
 volumes:
   pg-data:

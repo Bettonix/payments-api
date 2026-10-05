@@ -18,47 +18,36 @@ import java.util.function.Supplier;
 public class PaymentMetrics {
 
     private final MeterRegistry registry;
-    private final Counter createdCounter;
-    private final Counter replayedCounter;
-    private final Counter transitionCounter;
 
     public PaymentMetrics(MeterRegistry registry) {
         this.registry = registry;
-        this.createdCounter = Counter.builder("payments_created_total")
-            .description("payments successfully created")
-            .register(registry);
-        this.replayedCounter = Counter.builder("payments_replayed_total")
-            .description("idempotency replays served from cache/db")
-            .register(registry);
-        this.transitionCounter = Counter.builder("payments_transitioned_total")
-            .description("state transitions applied to payments")
-            .register(registry);
     }
 
     public void recordCreated() {
-        createdCounter.increment();
+        recordCreated("UNKNOWN");
     }
 
     public void recordCreated(String currency) {
-        recordCreated();
-        Counter.builder("payments_created_total")
+        Counter.builder("payments.created")
             .description("payments successfully created by currency")
-            .tag("currency", currency != null ? currency : "UNKNOWN")
+            .tag("currency", currency != null && !currency.isBlank() ? currency : "UNKNOWN")
             .register(registry)
             .increment();
     }
 
     public void recordReplayed() {
-        replayedCounter.increment();
+        Counter.builder("payments.replayed")
+            .description("idempotency replays served from cache/db")
+            .register(registry)
+            .increment();
     }
 
     public void recordTransition() {
-        transitionCounter.increment();
+        recordTransition(PaymentStatus.PENDING, PaymentStatus.AUTHORIZED);
     }
 
     public void recordTransition(PaymentStatus from, PaymentStatus to) {
-        recordTransition();
-        Counter.builder("payments_transitioned_total")
+        Counter.builder("payments.transitioned")
             .description("state transitions applied with tags")
             .tag("from", from != null ? from.name() : "NONE")
             .tag("to", to != null ? to.name() : "NONE")
