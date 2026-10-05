@@ -2,6 +2,7 @@ package com.portfolio.payments.application;
 
 import com.portfolio.payments.application.metrics.PaymentMetrics;
 import com.portfolio.payments.application.port.EventSerializer;
+import com.portfolio.payments.application.port.IdempotencyStore;
 import com.portfolio.payments.domain.IdempotencyKeyConflictException;
 import com.portfolio.payments.domain.IdempotencyPayloadMismatchException;
 import com.portfolio.payments.domain.Money;
@@ -12,6 +13,7 @@ import com.portfolio.payments.domain.PaymentEvent;
 import com.portfolio.payments.domain.PaymentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,21 +42,32 @@ public class CreatePaymentUseCase {
     private final OutboxRepository outbox;
     private final PaymentMetrics metrics;
     private final EventSerializer serializer;
+    private final IdempotencyStore idempotencyStore;
+
+    @Autowired
+    public CreatePaymentUseCase(PaymentRepository repository,
+                                OutboxRepository outbox,
+                                PaymentMetrics metrics,
+                                EventSerializer serializer,
+                                IdempotencyStore idempotencyStore) {
+        this.repository = repository;
+        this.outbox = outbox;
+        this.metrics = metrics;
+        this.serializer = serializer;
+        this.idempotencyStore = idempotencyStore != null ? idempotencyStore : IdempotencyStore.noop();
+    }
 
     public CreatePaymentUseCase(PaymentRepository repository,
                                 OutboxRepository outbox,
                                 PaymentMetrics metrics,
                                 EventSerializer serializer) {
-        this.repository = repository;
-        this.outbox = outbox;
-        this.metrics = metrics;
-        this.serializer = serializer;
+        this(repository, outbox, metrics, serializer, IdempotencyStore.noop());
     }
 
     public CreatePaymentUseCase(PaymentRepository repository,
                                 OutboxRepository outbox,
                                 PaymentMetrics metrics) {
-        this(repository, outbox, metrics, event -> "{\"eventType\":\"" + event.eventType() + "\"}");
+        this(repository, outbox, metrics, event -> "{\"eventType\":\"" + event.eventType() + "\"}", IdempotencyStore.noop());
     }
 
     @Transactional
@@ -66,42 +79,81 @@ public class CreatePaymentUseCase {
     public Result execute(String merchantId, String idempotencyKey, UUID payerId, UUID payeeId, Money amount) {
         String fingerprint = RequestFingerprint.compute(payerId, payeeId, amount);
 
-        return repository.findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey)
-            .map(existing -> {
-                // C8: Validação de reuso com payload diferente
-                if (existing.requestFingerprint() != null && !existing.requestFingerprint().equals(fingerprint)) {
-                    log.warn("idempotency key reused with mismatched payload: key={} merchant={}",
-                        idempotencyKey, merchantId);
-                    throw new IdempotencyPayloadMismatchException(idempotencyKey);
-                }
-                log.info("idempotent replay: key={} paymentId={} merchant={}",
-                    idempotencyKey, existing.id(), merchantId);
-                metrics.recordReplayed();
-                return Result.replayed(existing);
-            })
-            .orElseGet(() -> {
-                Payment payment = Payment.create(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount);
-                Payment saved;
-                try {
-                    // C1 Fix: insert com flush imediato dentro da transação
-                    saved = repository.insert(payment);
-                } catch (DataIntegrityViolationException ex) {
-                    log.info("idempotency race detected on key={} merchant={}", idempotencyKey, merchantId);
-                    throw new IdempotencyKeyConflictException(idempotencyKey);
-                }
+        // 1. Tentar adquirir lock distribuído no Redis (ou fail-open se Redis indisponível)
+        IdempotencyStore.AcquireResult acquireResult =
+            idempotencyStore.tryAcquire(merchantId, idempotencyKey, fingerprint);
 
-                // C3 Fix: serialização segura dos domain events
-                List<PaymentEvent> events = payment.pullEvents();
-                for (PaymentEvent event : events) {
-                    String payload = serializer.serialize(event);
-                    outbox.save(OutboxEvent.create(saved.merchantId(), "Payment", saved.id(), event.eventType(), payload));
-                }
+        if (acquireResult instanceof IdempotencyStore.AcquireResult.InProgress) {
+            log.info("idempotency in-progress lock detected in redis: key={} merchant={}", idempotencyKey, merchantId);
+            throw new IdempotencyKeyConflictException(idempotencyKey);
+        }
 
-                log.info("created payment id={} amount={} {} merchant={}",
-                    saved.id(), saved.amount().amount(), saved.amount().currency().getCurrencyCode(), saved.merchantId());
-                metrics.recordCreated(saved.amount().currency().getCurrencyCode());
-                return Result.created(saved);
-            });
+        if (acquireResult instanceof IdempotencyStore.AcquireResult.PayloadMismatch) {
+            log.warn("idempotency payload mismatch in redis: key={} merchant={}", idempotencyKey, merchantId);
+            throw new IdempotencyPayloadMismatchException(idempotencyKey);
+        }
+
+        if (acquireResult instanceof IdempotencyStore.AcquireResult.Completed completed) {
+            return repository.findById(completed.paymentId())
+                .filter(p -> p.merchantId().equals(merchantId))
+                .map(existing -> {
+                    log.info("idempotent replay from redis completed key: key={} paymentId={} merchant={}",
+                        idempotencyKey, existing.id(), merchantId);
+                    metrics.recordReplayed();
+                    return Result.replayed(existing);
+                })
+                .orElseGet(() -> createWithDatabaseAndComplete(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount));
+        }
+
+        return createWithDatabaseAndComplete(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount);
+    }
+
+    private Result createWithDatabaseAndComplete(String merchantId, String idempotencyKey, String fingerprint,
+                                                 UUID payerId, UUID payeeId, Money amount) {
+        var existingOpt = repository.findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey);
+        if (existingOpt.isPresent()) {
+            Payment existing = existingOpt.get();
+            if (existing.requestFingerprint() != null && !existing.requestFingerprint().equals(fingerprint)) {
+                log.warn("idempotency key reused with mismatched payload: key={} merchant={}",
+                    idempotencyKey, merchantId);
+                throw new IdempotencyPayloadMismatchException(idempotencyKey);
+            }
+            log.info("idempotent replay: key={} paymentId={} merchant={}",
+                idempotencyKey, existing.id(), merchantId);
+            metrics.recordReplayed();
+            idempotencyStore.complete(merchantId, idempotencyKey, existing.id(), fingerprint);
+            return Result.replayed(existing);
+        }
+
+        boolean success = false;
+        try {
+            Payment payment = Payment.create(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount);
+            Payment saved;
+            try {
+                saved = repository.insert(payment);
+            } catch (DataIntegrityViolationException ex) {
+                log.info("idempotency race detected on key={} merchant={}", idempotencyKey, merchantId);
+                throw new IdempotencyKeyConflictException(idempotencyKey);
+            }
+
+            List<PaymentEvent> events = payment.pullEvents();
+            for (PaymentEvent event : events) {
+                String payload = serializer.serialize(event);
+                outbox.save(OutboxEvent.create(saved.merchantId(), "Payment", saved.id(), event.eventType(), payload));
+            }
+
+            log.info("created payment id={} amount={} {} merchant={}",
+                saved.id(), saved.amount().amount(), saved.amount().currency().getCurrencyCode(), saved.merchantId());
+            metrics.recordCreated(saved.amount().currency().getCurrencyCode());
+
+            idempotencyStore.complete(merchantId, idempotencyKey, saved.id(), fingerprint);
+            success = true;
+            return Result.created(saved);
+        } finally {
+            if (!success) {
+                idempotencyStore.release(merchantId, idempotencyKey);
+            }
+        }
     }
 
     public sealed interface Result {
