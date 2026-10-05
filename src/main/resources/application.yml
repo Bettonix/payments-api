@@ -54,6 +54,15 @@ app:
   outbox:
     publisher: ${OUTBOX_PUBLISHER:kafka}
     relay-interval-ms: ${OUTBOX_RELAY_INTERVAL_MS:2000}
+  ingress:
+    publisher: ${INGRESS_PUBLISHER:kafka}
+    consumer:
+      enabled: ${INGRESS_CONSUMER_ENABLED:true}
+  kafka:
+    topics:
+      ingress: ${KAFKA_TOPIC_INGRESS:payments.ingress}
+    ingress-concurrency: ${KAFKA_INGRESS_CONCURRENCY:10}
+    ingress-group: ${KAFKA_INGRESS_GROUP:payments-ingress-workers}
 
 server:
   port: 8181

@@ -3,35 +3,29 @@ package com.portfolio.payments.application;
 import com.portfolio.payments.application.metrics.PaymentMetrics;
 import com.portfolio.payments.application.port.EventSerializer;
 import com.portfolio.payments.application.port.IdempotencyStore;
+import com.portfolio.payments.application.port.PaymentIngressCommand;
+import com.portfolio.payments.application.port.PaymentIngressPublisher;
 import com.portfolio.payments.domain.IdempotencyKeyConflictException;
 import com.portfolio.payments.domain.IdempotencyPayloadMismatchException;
 import com.portfolio.payments.domain.Money;
-import com.portfolio.payments.domain.OutboxEvent;
 import com.portfolio.payments.domain.OutboxRepository;
 import com.portfolio.payments.domain.Payment;
-import com.portfolio.payments.domain.PaymentEvent;
 import com.portfolio.payments.domain.PaymentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
+import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Use case: criar um Payment novo respeitando idempotência.
+ * Use case: ingestão assíncrona de pagamentos de alta performance inspirada no PIX / RFC 7240.
  *
- * <p>C1 Fix: Usa {@code repository.insert()} que executa persist + flush síncrono,
- * garantindo que colisões concorrentes da chave de idempotência disparem
- * {@link DataIntegrityViolationException} dentro do bloco try/catch.</p>
- *
- * <p>C8 Fix: Valida o fingerprint do payload contra o registro existente.
- * Chave reutilizada com payload divergente lança {@link IdempotencyPayloadMismatchException} (HTTP 422).</p>
- *
- * <p>C3 Fix: Serializa domain events usando {@link EventSerializer}.</p>
+ * <p>Valida o schema e adquire o lock no Redis (&lt; 2ms). Se for replay, retorna a entidade existente.
+ * Se for nova intenção, emite o comando de ingestão para o Kafka particionado pelo payerId e
+ * retorna imediatamente com status ACCEPTED.</p>
  */
 @Service
 public class CreatePaymentUseCase {
@@ -39,22 +33,28 @@ public class CreatePaymentUseCase {
     private static final Logger log = LoggerFactory.getLogger(CreatePaymentUseCase.class);
 
     private final PaymentRepository repository;
-    private final OutboxRepository outbox;
     private final PaymentMetrics metrics;
-    private final EventSerializer serializer;
     private final IdempotencyStore idempotencyStore;
+    private final PaymentIngressPublisher ingressPublisher;
 
     @Autowired
+    public CreatePaymentUseCase(PaymentRepository repository,
+                                PaymentMetrics metrics,
+                                IdempotencyStore idempotencyStore,
+                                PaymentIngressPublisher ingressPublisher) {
+        this.repository = repository;
+        this.metrics = metrics;
+        this.idempotencyStore = idempotencyStore != null ? idempotencyStore : IdempotencyStore.noop();
+        this.ingressPublisher = ingressPublisher;
+    }
+
     public CreatePaymentUseCase(PaymentRepository repository,
                                 OutboxRepository outbox,
                                 PaymentMetrics metrics,
                                 EventSerializer serializer,
                                 IdempotencyStore idempotencyStore) {
-        this.repository = repository;
-        this.outbox = outbox;
-        this.metrics = metrics;
-        this.serializer = serializer;
-        this.idempotencyStore = idempotencyStore != null ? idempotencyStore : IdempotencyStore.noop();
+        this(repository, metrics, idempotencyStore,
+            cmd -> new PaymentIngressService(repository, outbox, metrics, serializer, idempotencyStore).process(cmd));
     }
 
     public CreatePaymentUseCase(PaymentRepository repository,
@@ -102,14 +102,14 @@ public class CreatePaymentUseCase {
                     metrics.recordReplayed();
                     return Result.replayed(existing);
                 })
-                .orElseGet(() -> createWithDatabaseAndComplete(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount));
+                .orElseGet(() -> ingestAndAccept(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount));
         }
 
-        return createWithDatabaseAndComplete(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount);
+        return ingestAndAccept(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount);
     }
 
-    private Result createWithDatabaseAndComplete(String merchantId, String idempotencyKey, String fingerprint,
-                                                 UUID payerId, UUID payeeId, Money amount) {
+    private Result ingestAndAccept(String merchantId, String idempotencyKey, String fingerprint,
+                                   UUID payerId, UUID payeeId, Money amount) {
         var existingOpt = repository.findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey);
         if (existingOpt.isPresent()) {
             Payment existing = existingOpt.get();
@@ -118,48 +118,42 @@ public class CreatePaymentUseCase {
                     idempotencyKey, merchantId);
                 throw new IdempotencyPayloadMismatchException(idempotencyKey);
             }
-            log.info("idempotent replay: key={} paymentId={} merchant={}",
+            log.info("idempotent replay from repository: key={} paymentId={} merchant={}",
                 idempotencyKey, existing.id(), merchantId);
             metrics.recordReplayed();
             idempotencyStore.complete(merchantId, idempotencyKey, existing.id(), fingerprint);
             return Result.replayed(existing);
         }
 
-        boolean success = false;
-        try {
-            Payment payment = Payment.create(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount);
-            Payment saved;
-            try {
-                saved = repository.insert(payment);
-            } catch (DataIntegrityViolationException ex) {
-                log.info("idempotency race detected on key={} merchant={}", idempotencyKey, merchantId);
-                throw new IdempotencyKeyConflictException(idempotencyKey);
-            }
+        UUID paymentId = UUID.randomUUID();
+        Payment payment = Payment.createWithId(paymentId, merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount);
 
-            List<PaymentEvent> events = payment.pullEvents();
-            for (PaymentEvent event : events) {
-                String payload = serializer.serialize(event);
-                outbox.save(OutboxEvent.create(saved.merchantId(), "Payment", saved.id(), event.eventType(), payload));
-            }
+        PaymentIngressCommand command = new PaymentIngressCommand(
+            paymentId,
+            merchantId,
+            idempotencyKey,
+            fingerprint,
+            payerId,
+            payeeId,
+            amount,
+            Instant.now()
+        );
 
-            log.info("created payment id={} amount={} {} merchant={}",
-                saved.id(), saved.amount().amount(), saved.amount().currency().getCurrencyCode(), saved.merchantId());
-            metrics.recordCreated(saved.amount().currency().getCurrencyCode());
+        ingressPublisher.publish(command);
+        metrics.recordCreated(payment.amount().currency().getCurrencyCode());
 
-            idempotencyStore.complete(merchantId, idempotencyKey, saved.id(), fingerprint);
-            success = true;
-            return Result.created(saved);
-        } finally {
-            if (!success) {
-                idempotencyStore.release(merchantId, idempotencyKey);
-            }
-        }
+        log.info("accepted async payment id={} amount={} {} merchant={}",
+            payment.id(), payment.amount().amount(), payment.amount().currency().getCurrencyCode(), merchantId);
+
+        return Result.accepted(payment);
     }
 
     public sealed interface Result {
         Payment payment();
-        static Result created(Payment p) { return new Created(p); }
+        static Result accepted(Payment p) { return new Accepted(p); }
+        static Result created(Payment p) { return new Accepted(p); }
         static Result replayed(Payment p) { return new Replayed(p); }
+        record Accepted(Payment payment) implements Result {}
         record Created(Payment payment) implements Result {}
         record Replayed(Payment payment) implements Result {}
     }

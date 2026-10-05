@@ -85,6 +85,8 @@ public class Benchmark {
         // Fase 2: Replays Idempotentes
         BenchmarkResult replayResult = null;
         if (replayCount > 0 && !sampleList.isEmpty()) {
+            System.out.println("\n" + BOLD + " Aguardando trabalhadores do Kafka processarem a fila de ingestão..." + RESET);
+            Thread.sleep(2500);
             System.out.println("\n" + BOLD + " [3/4] Fase 2: Replay Idempotente de " + String.format("%,d", replayCount) + " Pagamentos (Teste de Cache Redis)..." + RESET);
             replayResult = runReplayPhase(client, host, tokenProvider, sampleList, replayCount, concurrency);
             printPhaseSummary("FASE 2: REPLAY IDEMPOTENTE (CACHE REDIS HIT)", replayResult);
@@ -93,6 +95,7 @@ public class Benchmark {
         // Fase 3: Transições de Estado
         BenchmarkResult transitionResult = null;
         if (transitionCount > 0 && !sampleList.isEmpty()) {
+            Thread.sleep(1500); // aguarda persistência assíncrona dos samples pelos workers
             System.out.println("\n" + BOLD + " [4/4] Fase 3: Transição de Estado de " + String.format("%,d", transitionCount) + " Pagamentos (/authorize com If-Match)..." + RESET);
             transitionResult = runTransitionPhase(client, host, tokenProvider, sampleList, transitionCount, concurrency);
             printPhaseSummary("FASE 3: TRANSIÇÕES DE ESTADO (MÁQUINA DE ESTADOS)", transitionResult);
@@ -208,7 +211,7 @@ public class Benchmark {
                         int code = resp.statusCode();
                         statusCounts.computeIfAbsent(code, k -> new AtomicInteger(0)).incrementAndGet();
 
-                        if (code == 201 && sampleList.size() < 10000) {
+                        if ((code == 202 || code == 201) && sampleList.size() < 10000) {
                             String paymentId = extractId(resp.body());
                             String etag = resp.headers().firstValue("ETag").orElse("\"v0\"");
                             if (paymentId != null) {
@@ -464,12 +467,16 @@ public class Benchmark {
             writer.println();
             writer.println("| Fase do Benchmark | Total Requisições | Throughput (RPS) | Latência p50 | Latência p95 | Latência p99 | Status Predominante |");
             writer.println("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |");
-            writer.printf("| **1. Criação (POST /payments)** | %,d | **%.1f req/s** | %.2f ms | %.2f ms | %.2f ms | HTTP 201 Created (%d) |%n",
-                creation.totalCount, creation.throughput, creation.p50Ms, creation.p95Ms, creation.p99Ms, creation.statusCounts.getOrDefault(201, 0));
+            int creationSuccessCount = creation.statusCounts.getOrDefault(202, creation.statusCounts.getOrDefault(201, 0));
+            String creationStatusLabel = creation.statusCounts.containsKey(202) ? "HTTP 202 Accepted" : "HTTP 201 Created";
+            writer.printf("| **1. Ingestão Assíncrona (POST /v1/payments)** | %,d | **%.1f req/s** | %.2f ms | %.2f ms | %.2f ms | %s (%d) |%n",
+                creation.totalCount, creation.throughput, creation.p50Ms, creation.p95Ms, creation.p99Ms, creationStatusLabel, creationSuccessCount);
 
             if (replay != null) {
-                writer.printf("| **2. Replay Idempotente (Redis)** | %,d | **%.1f req/s** | %.2f ms | %.2f ms | %.2f ms | HTTP 201 Replay (%d) |%n",
-                    replay.totalCount, replay.throughput, replay.p50Ms, replay.p95Ms, replay.p99Ms, replay.statusCounts.getOrDefault(201, 0));
+                int replaySuccessCount = replay.statusCounts.getOrDefault(200, replay.statusCounts.getOrDefault(201, 0));
+                String replayStatusLabel = replay.statusCounts.containsKey(200) ? "HTTP 200 OK (Replay)" : "HTTP 201 Replay";
+                writer.printf("| **2. Replay Idempotente (Redis)** | %,d | **%.1f req/s** | %.2f ms | %.2f ms | %.2f ms | %s (%d) |%n",
+                    replay.totalCount, replay.throughput, replay.p50Ms, replay.p95Ms, replay.p99Ms, replayStatusLabel, replaySuccessCount);
             }
             if (transition != null) {
                 writer.printf("| **3. Transições (POST /authorize)** | %,d | **%.1f req/s** | %.2f ms | %.2f ms | %.2f ms | HTTP 200 OK (%d) |%n",
@@ -480,12 +487,12 @@ public class Benchmark {
             writer.println();
             writer.println("## 🔬 Análise de Performance & Resiliência Distribuída");
             writer.println();
-            writer.println("### 1. Criação Transacional vs Replay em Cache");
+            writer.println("### 1. Ingestão Assíncrona vs Replay em Cache");
             if (replay != null) {
                 double speedup = replay.avgMs > 0 ? (creation.avgMs / replay.avgMs) : 1;
-                writer.printf("* **Latência Média de Criação (PostgreSQL + Outbox + Redis CAS):** `%.2f ms`%n", creation.avgMs);
+                writer.printf("* **Latência Média de Ingestão (Redis CAS + Kafka Ingress):** `%.2f ms`%n", creation.avgMs);
                 writer.printf("* **Latência Média de Replay (Redis Lua CAS Hit):** `%.2f ms`%n", replay.avgMs);
-                writer.printf("* **Fator de Aceleração do Cache de Idempotência:** **%.1fx mais rápido** que o ciclo transacional completo.%n", speedup);
+                writer.printf("* **Fator de Aceleração do Cache de Idempotência:** **%.1fx mais rápido** que o ciclo de ingestão.%n", speedup);
             }
             writer.println();
             writer.println("### 2. Distribuição Completa de Percentis (Fase de Criação)");

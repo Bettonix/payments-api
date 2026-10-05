@@ -70,12 +70,18 @@ public class PaymentController {
     }
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "Criar ou reproduzir pagamento", description = "Garante idempotência estrita via header Idempotency-Key.")
+    @Operation(summary = "Ingerir ou reproduzir pagamento de forma assíncrona", description = "Ingestão assíncrona de alta performance inspirada no padrão PIX/RFC 7240. Responde HTTP 202 Accepted com garantia de idempotência.")
     @ApiResponses({
-        @ApiResponse(responseCode = "201", description = "Pagamento criado ou reproduzido com sucesso",
+        @ApiResponse(responseCode = "202", description = "Intenção de pagamento aceita para processamento assíncrono",
             headers = {
-                @Header(name = "Location", description = "URI do recurso criado", schema = @Schema(type = "string")),
+                @Header(name = "Location", description = "URI do recurso aceito", schema = @Schema(type = "string")),
                 @Header(name = "ETag", description = "Identificador de versão da entidade", schema = @Schema(type = "string")),
+                @Header(name = "Preference-Applied", description = "Indica processamento assíncrono (respond-async)", schema = @Schema(type = "string"))
+            },
+            content = @Content(schema = @Schema(implementation = PaymentResponse.class))),
+        @ApiResponse(responseCode = "200", description = "Pagamento já existente reproduzido via cache de idempotência",
+            headers = {
+                @Header(name = "Location", description = "URI do recurso", schema = @Schema(type = "string")),
                 @Header(name = "Idempotent-Replayed", description = "Presente quando a resposta foi recuperada de replay", schema = @Schema(type = "boolean"))
             },
             content = @Content(schema = @Schema(implementation = PaymentResponse.class))),
@@ -103,15 +109,19 @@ public class PaymentController {
         var body = PaymentResponse.fromDomain(payment);
         String etag = toETag(payment.version());
 
-        var responseBuilder = ResponseEntity.status(HttpStatus.CREATED)
-            .location(URI.create("/v1/payments/" + payment.id()))
-            .eTag(etag);
-
         if (result instanceof CreatePaymentUseCase.Result.Replayed) {
-            responseBuilder.header("Idempotent-Replayed", "true");
+            return ResponseEntity.ok()
+                .location(URI.create("/v1/payments/" + payment.id()))
+                .eTag(etag)
+                .header("Idempotent-Replayed", "true")
+                .body(body);
         }
 
-        return responseBuilder.body(body);
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+            .location(URI.create("/v1/payments/" + payment.id()))
+            .eTag(etag)
+            .header("Preference-Applied", "respond-async")
+            .body(body);
     }
 
     @GetMapping(value = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)

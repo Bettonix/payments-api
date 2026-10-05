@@ -105,13 +105,13 @@ class PaymentControllerTest {
     // ---------- POST /v1/payments ----------
 
     @Test
-    void createReturns201OnSuccess() throws Exception {
+    void createReturns202OnSuccess() throws Exception {
         UUID payer = UUID.randomUUID();
         UUID payee = UUID.randomUUID();
         Payment payment = Payment.create(MERCHANT, "k1", null, payer, payee, Money.of(100, "BRL"));
 
         when(createUseCase.execute(eq(MERCHANT), eq("k1"), eq(payer), eq(payee), any(Money.class)))
-            .thenReturn(CreatePaymentUseCase.Result.created(payment));
+            .thenReturn(CreatePaymentUseCase.Result.accepted(payment));
 
         String body = """
             {
@@ -127,8 +127,9 @@ class PaymentControllerTest {
                 .header("Idempotency-Key", "k1")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
-            .andExpect(status().isCreated())
+            .andExpect(status().isAccepted())
             .andExpect(header().string(HttpHeaders.LOCATION, "/v1/payments/" + payment.id()))
+            .andExpect(header().string("Preference-Applied", "respond-async"))
             .andExpect(header().exists(HttpHeaders.ETAG))
             .andExpect(jsonPath("$.status").value("PENDING"))
             .andExpect(jsonPath("$.amount").value(100.00))
@@ -136,7 +137,7 @@ class PaymentControllerTest {
     }
 
     @Test
-    void createReturns201WithIdempotentReplayedHeaderOnReplay() throws Exception {
+    void createReturns200WithIdempotentReplayedHeaderOnReplay() throws Exception {
         UUID payer = UUID.randomUUID();
         UUID payee = UUID.randomUUID();
         Payment existing = Payment.create(MERCHANT, "k2", null, payer, payee, Money.of(50, "BRL"));
@@ -158,7 +159,7 @@ class PaymentControllerTest {
                 .header("Idempotency-Key", "k2")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
-            .andExpect(status().isCreated())
+            .andExpect(status().isOk())
             .andExpect(header().string("Idempotent-Replayed", "true"))
             .andExpect(jsonPath("$.status").value("PENDING"));
     }

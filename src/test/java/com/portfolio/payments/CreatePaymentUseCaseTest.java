@@ -53,10 +53,10 @@ class CreatePaymentUseCaseTest {
     }
 
     @Test
-    void firstCreateReturnsCreated() {
+    void firstCreateReturnsAccepted() {
         var result = createUseCase.execute("k1", UUID.randomUUID(), UUID.randomUUID(), Money.of(100, "BRL"));
 
-        assertInstanceOf(CreatePaymentUseCase.Result.Created.class, result);
+        assertInstanceOf(CreatePaymentUseCase.Result.Accepted.class, result);
         assertEquals("k1", result.payment().idempotencyKey());
     }
 
@@ -158,7 +158,7 @@ class CreatePaymentUseCaseTest {
 
         var result = useCaseWithStore.execute("fresh-key", UUID.randomUUID(), UUID.randomUUID(), Money.of(75, "BRL"));
 
-        assertInstanceOf(CreatePaymentUseCase.Result.Created.class, result);
+        assertInstanceOf(CreatePaymentUseCase.Result.Accepted.class, result);
         org.mockito.Mockito.verify(mockStore).complete(any(), eq("fresh-key"), eq(result.payment().id()), any());
     }
 

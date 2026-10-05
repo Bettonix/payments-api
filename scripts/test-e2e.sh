@@ -20,6 +20,7 @@ echo "$CREATE_RESP"
 
 PAYMENT_ID=$(echo "$CREATE_RESP" | grep -o '"id":"[^"]*"' | head -1 | cut -d '"' -f4)
 echo "Created Payment ID: $PAYMENT_ID"
+sleep 0.5
 
 echo -e "\n=== 3. Verifying Redis Idempotency Store ==="
 docker exec payments-redis redis-cli HGETALL "idemp:acme:$IDEM_KEY"

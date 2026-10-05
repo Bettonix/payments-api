@@ -65,8 +65,13 @@ public class Payment {
 
     public static Payment create(String merchantId, String idempotencyKey, String requestFingerprint,
                                  UUID payerId, UUID payeeId, Money amount) {
+        return createWithId(UUID.randomUUID(), merchantId, idempotencyKey, requestFingerprint, payerId, payeeId, amount);
+    }
+
+    public static Payment createWithId(UUID id, String merchantId, String idempotencyKey, String requestFingerprint,
+                                       UUID payerId, UUID payeeId, Money amount) {
         Instant now = Instant.now();
-        Payment payment = new Payment(UUID.randomUUID(), merchantId, idempotencyKey, requestFingerprint,
+        Payment payment = new Payment(id, merchantId, idempotencyKey, requestFingerprint,
             payerId, payeeId, amount, PaymentStatus.PENDING, now, now, null, null);
         payment.recordEvent(new PaymentEvent.PaymentCreated(
             payment.id, payment.merchantId, payment.idempotencyKey,
