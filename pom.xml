@@ -10,7 +10,7 @@
 	</parent>
 	<groupId>com.portfolio</groupId>
 	<artifactId>payments-api</artifactId>
-	<version>0.1.0</version>
+	<version>2.0.0</version>
 	<name>payments-api</name>
 	<description>Payments API</description>
 
