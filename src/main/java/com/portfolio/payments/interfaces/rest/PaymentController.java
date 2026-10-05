@@ -43,7 +43,7 @@ import java.util.UUID;
  * API REST v1 de pagamentos com autenticação OAuth2 e isolamento multi-tenant (merchant_id).
  */
 @RestController
-@RequestMapping({"/v1/payments", "/payments"})
+@RequestMapping("/v1/payments")
 @Tag(name = "Payments", description = "Operações de criação, consulta e transição de pagamentos")
 public class PaymentController {
 

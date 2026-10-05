@@ -1,22 +1,61 @@
-# Payments API
+# 💳 Payments API
 
-> Enterprise Payment Processing Platform com Arquitetura Hexagonal, Idempotência Distribuída em Duas Camadas (Redis Lua CAS + Postgres), Transactional Outbox com Apache Kafka KRaft e CloudEvents v1.0, Autenticação OAuth2 / Keycloak com Isolamento Multi-Tenant e Observabilidade Nativa OpenTelemetry.
+<p align="center">
+  <strong>Enterprise Financial Processing Platform & Distributed Systems Engine</strong><br>
+  <em>Clean Hexagonal Architecture • Dual-Layer Distributed Idempotency • Transactional Outbox • Apache Kafka KRaft • CloudEvents v1.0 • OAuth2 Multi-Tenancy • OpenTelemetry</em>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Java-21_LTS-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white" alt="Java 21" />
+  <img src="https://img.shields.io/badge/Spring_Boot-3.3.5-6DB33F?style=for-the-badge&logo=springboot&logoColor=white" alt="Spring Boot 3.3.5" />
+  <img src="https://img.shields.io/badge/Apache_Kafka-4.0_KRaft-231F20?style=for-the-badge&logo=apachekafka&logoColor=white" alt="Kafka 4.0 KRaft" />
+  <img src="https://img.shields.io/badge/PostgreSQL-16_Alpine-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL 16" />
+  <img src="https://img.shields.io/badge/Redis-7_Alpine-DC382D?style=for-the-badge&logo=redis&logoColor=white" alt="Redis 7" />
+  <img src="https://img.shields.io/badge/Keycloak-26-4B8BF5?style=for-the-badge&logo=redhat&logoColor=white" alt="Keycloak 26" />
+  <img src="https://img.shields.io/badge/OpenTelemetry-LGTM_Stack-F5A800?style=for-the-badge&logo=opentelemetry&logoColor=white" alt="OpenTelemetry" />
+  <img src="https://img.shields.io/badge/ArchUnit-Enforced-blueviolet?style=for-the-badge" alt="ArchUnit" />
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License MIT" />
+</p>
 
 ---
 
-## 🏗️ Arquitetura e Decisões Técnicas
+## 📌 Sumário Executivo
 
-Construído sob os princípios de **Clean / Hexagonal Architecture (Ports and Adapters)**, com garantia de integridade verificada estritamente via **ArchUnit** em pipeline de CI.
+O **Payments API** é uma plataforma distribuída de alta resiliência e baixa latência projetada para processamento de pagamentos em larga escala. Desenvolvido sob os mais rigorosos padrões da indústria de pagamentos e engenharia financeira (ex.: Stripe, Adyen), o sistema elimina os riscos críticos de sistemas distribuídos: **dupla cobrança**, **dual-write**, **inconsistência de concorrência** e **vazamento de dados entre lojistas (BOLA)**.
+
+### Por que este projeto se destaca:
+* **Idempotência Distribuída em Duas Camadas**: Script atômico Lua CAS no Redis com locks in-flight de 120s, cache de respostas de 24h, canonical fingerprinting SHA-256 e resiliência fail-open para restrição relacional `UNIQUE (merchant_id, idempotency_key)` via Resilience4j.
+* **Transactional Outbox com Apache Kafka KRaft**: Eliminação de dual-write entre banco relacional e mensageria através da gravação atômica na tabela `outbox_events` (`SKIP LOCKED`) e publicação ordenada por chave no Kafka 4.x.
+* **Padronização CloudEvents v1.0 (Modo Binário)**: Rastreabilidade e interoperabilidade universal com metadados CNCF nos cabeçalhos Kafka (`ce_specversion`, `ce_id`, `ce_source`, `ce_type`, `ce_subject`, `ce_merchantid`).
+* **Segurança Zero-Trust & Prevenção OWASP BOLA**: Autenticação OAuth2 Resource Server via Keycloak, escopos granulares (`payments:write`, `payments:read`, `payments:admin`) e proteção ativa contra OWASP API #1 (BOLA) respondendo estritamente com **HTTP 404 Not Found**.
+* **Contratos RESTful v1 e RFC 9457**: Transições especializadas de máquina de estados (`/authorize`, `/capture`, `/settle`, `/fail`, `/cancel`), concorrência otimista com ETags/`If-Match` (**HTTP 412**) e respostas de erro uniformes em `application/problem+json`.
+* **Observabilidade Completa de Produção**: Rastreamento distribuído de ponta a ponta com OpenTelemetry bridge, push exporter OTLP para a stack unificada Grafana LGTM e métricas customizadas via Micrometer.
+* **Arquitetura Hexagonal Pura com ArchUnit**: Camadas de Domínio e Casos de Uso 100% livres de anotações ou dependências de frameworks, validadas continuamente no CI.
+
+---
+
+## 🏛️ Arquitetura do Sistema
+
+### 1. Hexagonal Architecture (Ports & Adapters)
+
+O núcleo de negócio é totalmente desacoplado da infraestrutura através de portas e adaptadores. Regras de negócio, cálculos monetários de alta precisão e transições de estado são independentes de frameworks.
 
 ```mermaid
 graph TD
-    subgraph Interfaces [Interfaces / REST v1]
-        PC[PaymentController] --> DTO[DTOs & OpenAPI 3]
-        AEH[ApiExceptionHandler / RFC 9457]
-        SEC[SecurityConfig / OAuth2 Resource Server]
+    subgraph ClientLayer [Consumidores & Clientes]
+        SPA[Web SPA / Mobile]
+        Partner[Merchant API Client]
+        Ops[Backoffice / Ops Admin]
     end
 
-    subgraph Application [Application Layer]
+    subgraph InterfaceAdapters [Driving Adapters / Interfaces REST v1]
+        PC[PaymentController]
+        AEH[ApiExceptionHandler / RFC 9457]
+        SEC[SecurityConfig / OAuth2 Resource Server]
+        Swagger[OpenAPI 3 / Springdoc]
+    end
+
+    subgraph ApplicationLayer [Application Layer / Use Cases]
         CP[CreatePaymentUseCase]
         TP[TransitionPaymentUseCase]
         GP[GetPaymentUseCase]
@@ -25,7 +64,7 @@ graph TD
         PM[PaymentMetrics]
     end
 
-    subgraph Domain [Pure Domain - Java 21]
+    subgraph PureDomain [Pure Domain - Java 21]
         P[Payment Aggregate Root]
         M[Money Value Object]
         OE[OutboxEvent Entity]
@@ -35,214 +74,339 @@ graph TD
         CM[CurrentMerchant Port]
     end
 
-    subgraph Infrastructure [Infrastructure Adapters]
-        JPA[JpaPaymentRepositoryAdapter / Hibernate]
-        RIS[RedisIdempotencyStore / Lua CAS + CB]
-        KOP[KafkaOutboxPublisher / CloudEvents v1.0]
-        KTC[KafkaTopicsConfig / KRaft]
-        JWT[JwtCurrentMerchant]
+    subgraph DrivenAdapters [Driven Adapters / Infrastructure]
+        JPA[JpaPaymentRepositoryAdapter / PostgreSQL 16]
+        RIS[RedisIdempotencyStore / Lua CAS + Circuit Breaker]
+        KOP[KafkaOutboxPublisher / Apache Kafka 4.x KRaft]
+        JWT[JwtCurrentMerchant / Keycloak 26]
+        OTEL[OpenTelemetry Bridge / Grafana LGTM]
     end
 
-    PC --> CP
-    PC --> TP
-    PC --> GP
-    CP --> PR
-    CP --> IS
-    CP --> RF
-    OR --> KOP
-    IS -.-> RIS
+    ClientLayer --> InterfaceAdapters
+    InterfaceAdapters --> ApplicationLayer
+    ApplicationLayer --> PureDomain
+    ApplicationLayer --> PR
+    ApplicationLayer --> IS
+    ApplicationLayer --> CM
     PR -.-> JPA
+    IS -.-> RIS
     CM -.-> JWT
+    OR --> KOP
 ```
 
-### Principais Destaques de Engenharia
+---
 
-1. **Idempotência Distribuída em Duas Camadas com Fingerprinting (ADR-0003)**:
-   - **Lock & Cache Atômico em Redis**: Script Lua atômico com CAS (`tryAcquire`), TTL curto in-flight (120s) e TTL longo de conclusão (24h).
-   - **Request Fingerprinting SHA-256**: Validação canônica de payload. O reuso da mesma `Idempotency-Key` com valores ou pagadores diferentes é rejeitado com **HTTP 422 Unprocessable Content**.
-   - **Resiliência Fail-Open (Resilience4j)**: Se o Redis estiver indisponível ou abrir o circuito, a API delega a consistência diretamente para a restrição relacional `UNIQUE (merchant_id, idempotency_key)` no PostgreSQL.
-   - **Respostas de Replay**: Replays seguros retornam **HTTP 201 Created** com o cabeçalho `Idempotent-Replayed: true`. Concorrência simultânea retorna **HTTP 409 Conflict** com `Retry-After: 1`.
+### 2. Fluxo de Idempotência Distribuída (Dual-Layer)
 
-2. **Transactional Outbox & CloudEvents v1.0 (ADR-0002)**:
-   - Elimina o problema de dual-write entre banco relacional e Kafka gravando eventos na tabela `outbox_events` na mesma transação atômica do pagamento.
-   - Poller `OutboxRelay` assíncrono com lease temporal e leitura pessimista sem bloqueio de tabela (`FOR UPDATE SKIP LOCKED`).
-   - Publicação no Kafka 4.x KRaft no tópico `payments.events` compatível com a especificação **CNCF CloudEvents v1.0 (Binary Mode)** (`ce_specversion`, `ce_id`, `ce_source`, `ce_type`, `ce_subject`, `ce_merchantid`).
-   - Particionamento ordenado por `payment_id`: garante que eventos de um mesmo pagamento sejam consumidos estritamente em ordem.
+Garante semântica estrita de processamento único mesmo sob rajadas massivas de retentativas de rede e chamadas concorrentes paralelas.
 
-3. **Segurança OAuth2 & Isolamento Multi-Tenant (ADR-0004)**:
-   - Validação de tokens JWT assinados pelo Keycloak com escopos granulares (`payments:write`, `payments:read`, `payments:admin`).
-   - Extração automática de `merchant_id` do token JWT para particionamento lógico transparente de dados.
-   - **Prevenção Ativa de BOLA (Broken Object Level Authorization - OWASP API #1)**: Consultas ou transições de recursos de outro tenant respondem com **HTTP 404 Not Found**, impedindo enumeração e vazamento de metadados.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Cliente / Lojista
+    participant API as PaymentController
+    participant Redis as Redis (Lua CAS)
+    participant DB as PostgreSQL (ACID)
+    participant Kafka as Kafka KRaft
 
-4. **Contratos RESTful v1 e RFC 9457 ProblemDetail (ADR-0005)**:
-   - Endpoints especializados estilo Stripe para a máquina de estados: `POST /v1/payments/{id}/authorize`, `/capture`, `/settle`, `/fail`, `/cancel`.
-   - Concorrência otimista com **ETag** e validação de versão via cabeçalho `If-Match` (**HTTP 412 Precondition Failed** em caso de estado desatualizado).
-   - Erros 4xx e 5xx padronizados em `application/problem+json` (RFC 9457).
-
-5. **Observabilidade Nativa (OpenTelemetry + Prometheus + Grafana LGTM)**:
-   - Rastreamento distribuído via OpenTelemetry bridge e push OTLP para o Grafana LGTM stack (`http://localhost:4318/v1/traces`).
-   - Propagação W3C Trace Context em requisições HTTP e eventos Kafka.
-   - Métricas customizadas Micrometer (`payments_created_total`, `payments_replayed_total`, `payments_outbox_pending`).
+    Client->>API: POST /v1/payments (Idempotency-Key: X)
+    API->>API: Calcula SHA-256 Fingerprint do payload
+    API->>Redis: EVALSHA idempotency_cas.lua (tryAcquire)
+    
+    alt Chave já concluída com mesmo Fingerprint
+        Redis-->>API: COMPLETED + PaymentId
+        API->>DB: Busca pagamento por ID
+        API-->>Client: HTTP 201 Created (Idempotent-Replayed: true, ETag: "v0")
+    else Chave já concluída com Fingerprint DIFERENTE
+        Redis-->>API: MISMATCH
+        API-->>Client: HTTP 422 Unprocessable Content (RFC 9457 ProblemDetail)
+    else Requisição idêntica concorrente em andamento
+        Redis-->>API: IN_PROGRESS
+        API-->>Client: HTTP 409 Conflict (Retry-After: 1)
+    else Chave Nova (Lock Adquirido com Sucesso)
+        Redis-->>API: ACQUIRED (TTL: 120s)
+        rect rgb(240, 248, 255)
+            Note over API,DB: Transação Atômica PostgreSQL
+            API->>DB: INSERT payments (merchant_id, idempotency_key, ...)
+            API->>DB: INSERT outbox_events (status: PENDING, ...)
+        end
+        API->>Redis: EVALSHA idempotency_cas.lua (complete, TTL: 24h)
+        API-->>Client: HTTP 201 Created (Location: /v1/payments/{id}, ETag: "v0")
+    end
+```
 
 ---
 
-## 🛠️ Stack Tecnológica
+### 3. Transactional Outbox & CloudEvents v1.0
 
-| Camada | Tecnologia | Detalhes |
-|---|---|---|
-| **Linguagem** | Java 21 LTS | Pattern matching, records, sealed interfaces, virtual threads ready |
-| **Framework** | Spring Boot 3.3.5 | Spring Security, Spring Data JPA, Spring Kafka, Spring Data Redis |
-| **Build & Tooling**| Apache Maven 3.9+ | Wrapper Maven (`mvnw`), plugins Compiler, Surefire, Springdoc |
-| **Banco de Dados** | PostgreSQL 16 Alpine | Migrações Flyway versionadas (`V1` a `V4`), isolamento multi-tenant |
-| **Cache & Lock** | Redis 7 Alpine | Scripts Lua atômicos para CAS, TTLs e rate/idempotency locking |
-| **Mensageria** | Apache Kafka 4.x (KRaft) | Sem ZooKeeper, tópico particionado `payments.events` e `payments.dlq` |
-| **Segurança / IdP** | Keycloak 26 | Realm `payments` importado automaticamente com clients e scopes |
-| **Resiliência** | Resilience4j 2.2 | Circuit Breakers para Kafka Publisher e Redis Idempotency |
-| **Observabilidade** | OpenTelemetry + LGTM | Micrometer Tracing OTel bridge + Prometheus + Grafana |
-| **Qualidade / Testes**| JUnit 5, Mockito, ArchUnit | 55+ testes unitários, fatiados e arquiteturais |
+Eliminação definitiva de dual-write. O evento de domínio é persistido na mesma transação relacional e publicado de forma assíncrona e confiável no Apache Kafka.
+
+```mermaid
+flowchart LR
+    subgraph Transaction [Transação Atômica Banco de Dados]
+        P[Pagamento Atualizado]
+        O[Evento Outbox Gravado]
+    end
+
+    subgraph Relay [Outbox Relay Engine]
+        Worker[Poller Assíncrono com FOR UPDATE SKIP LOCKED]
+    end
+
+    subgraph KafkaCluster [Apache Kafka 4.x KRaft]
+        Topic[Tópico: payments.events<br>Chave de Partição: payment_id<br>Headers: CloudEvents v1.0 Binário]
+        DLQ[Tópico: payments.dlq<br>Dead Letter Queue com Circuit Breaker]
+    end
+
+    Transaction --> Relay
+    Relay -->|Entrega At-Least-Once| Topic
+    Relay -.->|Falhas Críticas / Exaustão| DLQ
+```
 
 ---
 
-## 🚀 Como Executar
+### 4. Máquina de Estados Finita do Pagamento
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: POST /v1/payments
+    PENDING --> AUTHORIZED: POST /v1/payments/{id}/authorize (If-Match: "v0")
+    PENDING --> FAILED: POST /v1/payments/{id}/fail
+    PENDING --> CANCELED: POST /v1/payments/{id}/cancel
+    AUTHORIZED --> CAPTURED: POST /v1/payments/{id}/capture (If-Match: "v1")
+    AUTHORIZED --> CANCELED: POST /v1/payments/{id}/cancel
+    CAPTURED --> SETTLED: POST /v1/payments/{id}/settle (Admin Only)
+    SETTLED --> [*]
+    FAILED --> [*]
+    CANCELED --> [*]
+```
+
+---
+
+## 📡 Especificação da API REST `/v1/payments`
+
+> [!IMPORTANT]
+> **Versionamento Estrito**: Todos os endpoints de produção são estritamente versionados sob o prefixo `/v1/payments`. Rotas legadas não versionadas (`/payments`) foram completamente descontinuadas e respondem com **HTTP 404 Not Found**.
+
+| Método | Rota | Escopo OAuth2 | Cabeçalhos Principais | Status de Sucesso | Erros Mapeados (RFC 9457) |
+|---|---|---|---|---|---|
+| `POST` | `/v1/payments` | `payments:write` | `Idempotency-Key` (obrigatório) | `201 Created` (`Location`, `ETag`, `Idempotent-Replayed`) | `400`, `401`, `403`, `409`, `422` |
+| `GET` | `/v1/payments/{id}` | `payments:read` | `Authorization: Bearer <token>` | `200 OK` (`ETag`) | `401`, `403`, `404` (BOLA) |
+| `POST` | `/v1/payments/{id}/authorize` | `payments:write` | `If-Match: "v<version>"` | `200 OK` (`ETag`) | `400`, `404`, `409`, `412` |
+| `POST` | `/v1/payments/{id}/capture` | `payments:write` | `If-Match: "v<version>"` | `200 OK` (`ETag`) | `400`, `404`, `409`, `412` |
+| `POST` | `/v1/payments/{id}/settle` | `payments:admin` | `If-Match: "v<version>"` | `200 OK` (`ETag`) | `400`, `403`, `404`, `412` |
+| `POST` | `/v1/payments/{id}/fail` | `payments:admin` | Payload: `{"reason": "..."}` | `200 OK` (`ETag`) | `400`, `403`, `404`, `409` |
+| `POST` | `/v1/payments/{id}/cancel` | `payments:write` | `Authorization: Bearer <token>` | `200 OK` (`ETag`) | `400`, `404`, `409` |
+
+---
+
+## 🛠️ Stack Tecnológica & Engenharia
+
+| Camada | Tecnologia | Versão | Rationale de Arquitetura |
+|---|---|---|---|
+| **Linguagem** | Java | 21 LTS | Records, pattern matching, sealed interfaces, virtual threads ready. |
+| **Framework** | Spring Boot | 3.3.5 | Spring Security OAuth2 Resource Server, Spring Data JPA, Spring Kafka, Spring Data Redis. |
+| **Build & Tooling** | Apache Maven | 3.9+ | Wrapper Maven autônomo (`mvnw`), plugins Maven Compiler, Surefire e Springdoc. |
+| **Banco de Dados** | PostgreSQL | 16 Alpine | Migrações Flyway versionadas (`V1` a `V5`), particionamento lógico multi-tenant e `SKIP LOCKED`. |
+| **Cache & Lock** | Redis | 7 Alpine | Script atômico Lua para CAS, TTLs configuráveis e rate/idempotency locking. |
+| **Mensageria** | Apache Kafka | 4.x KRaft | Modo KRaft nativo (sem ZooKeeper), garantias de ordenação por partição e tópicos segregados. |
+| **Segurança / IdP** | Keycloak | 26 | Realm `payments` provisionado com clients pré-configurados (`merchant-acme`, `merchant-globex`, `payments-ops`). |
+| **Resiliência** | Resilience4j | 2.2 | Circuit Breakers e fallback fail-open para operações de mensageria e idempotência. |
+| **Observabilidade** | OpenTelemetry | LGTM Stack | Micrometer Tracing OTel bridge + push OTLP (4318) para Grafana, Mimir, Loki e Tempo. |
+| **Qualidade & Testes**| ArchUnit & JUnit 5 | 1.3 / 5.10 | 55+ testes automatizados (unitários puros, isolamento de camadas, concorrência e mocks). |
+
+---
+
+## 🚀 Como Executar Localmente
 
 ### Pré-requisitos
-- **WSL 2 (Ubuntu/Debian) ou Linux / macOS**: Docker Engine e Docker Compose.
-- **Java 21 JDK** (ou execute via container/WSL).
+* **WSL 2 (Ubuntu/Debian) ou Linux / macOS**
+* **Docker & Docker Compose**
+* **Java 21 JDK** (ou use os binários do container)
 
-### 1. Iniciar Infraestrutura Local (Docker Compose)
-No terminal WSL (ou Linux):
+### 1. Iniciar toda a Infraestrutura Local
+No terminal WSL ou Linux, execute:
 ```bash
-# Sobe PostgreSQL, Redis e Kafka KRaft
-docker compose up -d postgres redis kafka
-
-# (Opcional) Para subir o Keycloak e Grafana LGTM:
-docker compose --profile auth --profile obs up -d
+# Sobe PostgreSQL 16, Redis 7, Kafka KRaft 4.x, Keycloak 26, Grafana LGTM e Kafka UI
+docker compose --profile tools --profile auth --profile obs up -d
 ```
-
-Verifique a saúde dos serviços:
+Verifique se todos os containers estão saudáveis (`Up (healthy)`):
 ```bash
 docker compose ps
 ```
 
-### 2. Compilar e Rodar os Testes
-Utilize o Maven Wrapper:
+### 2. Executar a Suíte de Testes Automatizados
 ```bash
 ./mvnw clean test
 ```
-
-Para verificar regras de arquitetura hexagonal:
+Para rodar especificamente a verificação arquitetural do ArchUnit:
 ```bash
 ./mvnw test -Dtest=HexagonalArchitectureTest
 ```
 
-### 3. Iniciar a Aplicação
+### 3. Iniciar a API
 ```bash
 ./mvnw spring-boot:run
 ```
-A API estará disponível em: `http://localhost:8181`
-Documentação interativa Swagger UI: `http://localhost:8181/swagger-ui.html`
+A API iniciará na porta **8181**.
+
+### 4. Executar Validação Automatizada Ponta a Ponta (E2E)
+Disponibilizamos um script completo de automação que executa o fluxo completo em tráfego real:
+```bash
+bash scripts/test-e2e.sh
+```
+O script valida autenticação Keycloak, criação com idempotência, replay, conflito 422, transições de estado, bloqueio BOLA 404, tabelas do Outbox e consumo de eventos no Kafka.
 
 ---
 
-## 📡 Exemplos de Uso da API
+## 💡 Exemplos de Uso (cURL Interativo)
 
-### Obter Token OAuth2 no Keycloak (Client Credentials)
+### 1. Obter Token OAuth2 para o Lojista (`merchant-acme`)
 ```bash
 export TOKEN=$(curl -s -X POST http://localhost:8080/realms/payments/protocol/openid-connect/token \
   -d "grant_type=client_credentials" \
   -d "client_id=merchant-acme" \
-  -d "client_secret=acme-secret" | jq -r .access_token)
+  -d "client_secret=acme-secret" \
+  -d "scope=payments:read payments:write" | jq -r .access_token)
 ```
 
-### Criar Pagamento com Idempotência
+### 2. Criar Pagamento com Chave de Idempotência
 ```bash
 curl -i -X POST http://localhost:8181/v1/payments \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: pay-req-001" \
+  -H "Idempotency-Key: pay-req-2026-001" \
   -d '{
     "payerId": "11111111-1111-1111-1111-111111111111",
     "payeeId": "22222222-2222-2222-2222-222222222222",
-    "amount": "150.00",
+    "amount": "250.00",
     "currency": "BRL"
   }'
 ```
-*Resposta:*
+**Resposta (HTTP 201 Created):**
 ```http
 HTTP/1.1 201 Created
-Location: /v1/payments/3fa85f64-5717-4562-b3fc-2c963f66afa6
-ETag: "W/\"0\""
+Location: /v1/payments/7e15f60b-4899-4c80-be31-7ff40428efc7
+ETag: "v0"
 Content-Type: application/json
 
 {
-  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "id": "7e15f60b-4899-4c80-be31-7ff40428efc7",
   "merchantId": "acme",
   "status": "PENDING",
-  "amount": "150.00",
+  "amount": 250.00,
   "currency": "BRL",
-  "payerId": "11111111-1111-1111-1111-111111111111",
-  "payeeId": "22222222-2222-2222-2222-222222222222",
-  "version": 0,
-  "createdAt": "2026-10-05T12:00:00Z"
+  "version": 0
 }
 ```
 
-### Replay Idempotente (Reenvio da mesma chave)
-```bash
-# Executando a mesma chamada novamente:
-curl -i -X POST http://localhost:8181/v1/payments \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: pay-req-001" \
-  -d '{
-    "payerId": "11111111-1111-1111-1111-111111111111",
-    "payeeId": "22222222-2222-2222-2222-222222222222",
-    "amount": "150.00",
-    "currency": "BRL"
-  }'
-```
-*Resposta com cabeçalho de replay:*
+### 3. Replay Idempotente Seguro
+Ao reexecutar a mesma chamada acima com os mesmos dados, a resposta é instantânea do Redis sem reprocessar no banco:
 ```http
 HTTP/1.1 201 Created
 Idempotent-Replayed: true
-ETag: "W/\"0\""
+ETag: "v0"
 ```
 
-### Transição de Estado com Proteção de Concorrência (If-Match)
-```bash
-curl -i -X POST http://localhost:8181/v1/payments/3fa85f64-5717-4562-b3fc-2c963f66afa6/authorize \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "If-Match: \"0\""
-```
-*Resposta:*
+### 4. Proteção de Divergência de Payload (HTTP 422 - RFC 9457)
+Reutilizar a mesma chave `pay-req-2026-001` com valor alterado (`amount: 999.00`) é imediatamente bloqueado:
 ```http
-HTTP/1.1 200 OK
-ETag: "W/\"1\""
+HTTP/1.1 422 Unprocessable Content
+Content-Type: application/problem+json
 
 {
-  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "status": "AUTHORIZED",
-  "version": 1
+  "type": "urn:problem-type:idempotency-key-reused",
+  "title": "Idempotency Key Reused",
+  "status": 422,
+  "detail": "Idempotency-Key 'pay-req-2026-001' was previously used with a different request payload",
+  "instance": "/v1/payments",
+  "traceId": "799895b68989cc5f2b940fb9915e4570"
 }
 ```
+
+### 5. Transição com Concorrência Otimista (`If-Match`)
+```bash
+curl -i -X POST http://localhost:8181/v1/payments/7e15f60b-4899-4c80-be31-7ff40428efc7/authorize \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "If-Match: \"v0\""
+```
+**Resposta:** Retorna **HTTP 200 OK**, status `AUTHORIZED` e novo cabeçalho `ETag: "v1"`.
+
+### 6. Isolamento Multi-Tenant & Bloqueio Ativo OWASP BOLA
+Ao autenticar como outro lojista (`merchant-globex`) e tentar consultar ou alterar o pagamento do `acme`:
+```bash
+export GLOBEX_TOKEN=$(curl -s -X POST http://localhost:8080/realms/payments/protocol/openid-connect/token \
+  -d "grant_type=client_credentials" \
+  -d "client_id=merchant-globex" \
+  -d "client_secret=globex-secret" \
+  -d "scope=payments:read" | jq -r .access_token)
+
+curl -i -X GET http://localhost:8181/v1/payments/7e15f60b-4899-4c80-be31-7ff40428efc7 \
+  -H "Authorization: Bearer $GLOBEX_TOKEN"
+```
+**Resposta:** **HTTP 404 Not Found** (em vez de 403), eliminando a vulnerabilidade de enumeração de dados de terceiros.
+
+---
+
+## 📊 Dashboards e Interfaces de Operação
+
+| Ferramenta | URL Local | Descrição |
+|---|---|---|
+| **Swagger UI** | [http://localhost:8181/swagger-ui.html](http://localhost:8181/swagger-ui.html) | Documentação interativa e sandbox de testes OpenAPI 3 |
+| **OpenAPI Spec** | [http://localhost:8181/v3/api-docs](http://localhost:8181/v3/api-docs) | Especificação OpenAPI 3 em formato JSON |
+| **Kafka UI** | [http://localhost:8085](http://localhost:8085) | Inspeção visual de mensagens CloudEvents, tópicos e partições |
+| **Grafana LGTM** | [http://localhost:3000](http://localhost:3000) | Visualização de traces OpenTelemetry (Tempo), métricas e dashboards |
+| **Keycloak Admin** | [http://localhost:8080](http://localhost:8080) | Painel administrativo do Identity Provider (admin / admin) |
+| **Actuator Health**| [http://localhost:8181/actuator/health](http://localhost:8181/actuator/health) | Health check consolidado de persistência, mensageria e cache |
+| **Prometheus Metrics**| [http://localhost:8181/actuator/prometheus](http://localhost:8181/actuator/prometheus) | Métricas expostas para scraping de telemetria |
 
 ---
 
 ## 📑 Architecture Decision Records (ADRs)
 
-Para detalhes aprofundados sobre as decisões tomadas, consulte o diretório [docs/adr/](docs/adr/):
-- [ADR-0001: Arquitetura Hexagonal com Spring Boot 3](docs/adr/0001-hexagonal-architecture.md)
-- [ADR-0002: Transactional Outbox Pattern e Especificação CloudEvents v1.0](docs/adr/0002-transactional-outbox-and-cloudevents.md)
-- [ADR-0003: Idempotência Distribuída em Duas Camadas com Redis, Fingerprinting e Fail-Open](docs/adr/0003-distributed-idempotency-with-redis-and-fingerprinting.md)
-- [ADR-0004: Isolamento Multi-Tenant e Autenticação OAuth2 Resource Server](docs/adr/0004-multi-tenant-isolation-and-oauth2-security.md)
-- [ADR-0005: Padrões RESTful v1, Transições Stripe-Style e RFC 9457 ProblemDetail](docs/adr/0005-rest-api-standards-and-rfc9457-problem-detail.md)
+Para um entendimento aprofundado das decisões de engenharia, consulte os ADRs formalizados em [docs/adr/](docs/adr/):
+
+* [ADR-0001: Adoção de Arquitetura Hexagonal com Spring Boot 3](docs/adr/0001-hexagonal-architecture.md)
+* [ADR-0002: Transactional Outbox Pattern e Especificação CloudEvents v1.0](docs/adr/0002-transactional-outbox-and-cloudevents.md)
+* [ADR-0003: Idempotência Distribuída em Duas Camadas com Redis Lua CAS e Fail-Open](docs/adr/0003-distributed-idempotency-with-redis-and-fingerprinting.md)
+* [ADR-0004: Isolamento Multi-Tenant e Autenticação OAuth2 Resource Server](docs/adr/0004-multi-tenant-isolation-and-oauth2-security.md)
+* [ADR-0005: Padrões RESTful v1, Transições Stripe-Style e RFC 9457 ProblemDetail](docs/adr/0005-rest-api-standards-and-rfc9457-problem-detail.md)
 
 ---
 
-## 🧪 Suíte de Testes e CI
+## 📂 Estrutura do Projeto
 
-O projeto possui validação contínua via GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)), executando build com PostgreSQL e Redis em container:
-- **Testes Unitários de Domínio**: Agregados puros sem dependência externa em menos de 50ms.
-- **Testes de Casos de Uso**: Simulação de corridas de concorrência, locks distribuídos e dead-lettering.
-- **Testes de Camada Web (`@WebMvcTest`)**: Validações de contrato, escopos OAuth2, RFC 9457 ProblemDetail e BOLA.
-- **Testes Arquiteturais (ArchUnit)**: Garantia estrita de que camadas de domínio e aplicação não dependem de frameworks ou infraestrutura.
+```text
+payments-api/
+├── .github/workflows/ci.yml       # Pipeline CI Maven com PostgreSQL e Redis
+├── compose.yaml                   # Definição multi-serviço Docker Compose
+├── Makefile                       # Comandos simplificados de build e infraestrutura
+├── LICENSE                        # Licença MIT
+├── docs/adr/                      # Architecture Decision Records formais
+├── http/payments.http             # Coleção de testes para IDE (IntelliJ / VS Code)
+├── infra/keycloak/                # Provisionamento e Realm exportado do Keycloak
+├── scripts/test-e2e.sh            # Script automatizado de teste de ponta a ponta
+└── src/
+    ├── main/
+    │   ├── java/com/portfolio/payments/
+    │   │   ├── domain/            # Camada Pura de Domínio (Agregados, VOs, Eventos)
+    │   │   ├── application/       # Casos de Uso, Outbox Relay e Fingerprinting
+    │   │   ├── infrastructure/    # Adaptadores: PostgreSQL, Redis, Kafka, Security, OTel
+    │   │   └── interfaces/rest/   # Controladores REST v1, RFC 9457 Exception Handler, DTOs
+    │   └── resources/
+    │       ├── db/migration/      # Migrações Flyway (V1 a V5)
+    │       ├── redis/             # Scripts Lua atômicos para CAS
+    │       └── application.yml    # Configurações com suporte a Profiles
+    └── test/                      # Testes Unitários, de Integração e ArchUnit
+```
+
+---
+
+## 📄 Licença
+
+Este projeto está licenciado sob os termos da licença **MIT**. Consulte o arquivo [LICENSE](LICENSE) para obter detalhes completos.
+
+---
+
+<p align="center">
+  Desenvolvido com foco em excelência técnica, resiliência financeira e padrões de arquitetura distribuída.
+</p>

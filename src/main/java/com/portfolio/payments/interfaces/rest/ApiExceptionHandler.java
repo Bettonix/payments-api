@@ -198,6 +198,37 @@ public class ApiExceptionHandler {
         return response(problem, HttpStatus.BAD_REQUEST);
     }
 
+    @ExceptionHandler({
+        org.springframework.web.servlet.resource.NoResourceFoundException.class,
+        org.springframework.web.servlet.NoHandlerFoundException.class
+    })
+    public ResponseEntity<ProblemDetail> handleNotFoundResource(Exception ex, HttpServletRequest request) {
+        ProblemDetail problem = buildProblem(
+            HttpStatus.NOT_FOUND,
+            "urn:problem-type:resource-not-found",
+            "Resource Not Found",
+            ex.getMessage() != null ? ex.getMessage() : "Resource not found",
+            request
+        );
+        return response(problem, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(org.springframework.web.ErrorResponseException.class)
+    public ResponseEntity<ProblemDetail> handleErrorResponse(org.springframework.web.ErrorResponseException ex, HttpServletRequest request) {
+        HttpStatus status = HttpStatus.resolve(ex.getStatusCode().value());
+        if (status == null) {
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+        ProblemDetail problem = buildProblem(
+            status,
+            "urn:problem-type:" + status.name().toLowerCase().replace('_', '-'),
+            status.getReasonPhrase(),
+            ex.getBody().getDetail() != null ? ex.getBody().getDetail() : ex.getMessage(),
+            request
+        );
+        return response(problem, status);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ProblemDetail> handleAny(Exception ex, HttpServletRequest request) {
         log.error("unhandled server exception", ex);

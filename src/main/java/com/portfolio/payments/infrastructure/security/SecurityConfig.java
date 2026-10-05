@@ -50,17 +50,17 @@ public class SecurityConfig {
                 ).permitAll()
 
                 // Escopo payments:write para criação e transições comuns
-                .requestMatchers(HttpMethod.POST, "/v1/payments", "/payments").hasAuthority("SCOPE_payments:write")
-                .requestMatchers(HttpMethod.POST, "/v1/payments/*/authorize", "/payments/*/authorize").hasAuthority("SCOPE_payments:write")
-                .requestMatchers(HttpMethod.POST, "/v1/payments/*/capture", "/payments/*/capture").hasAuthority("SCOPE_payments:write")
-                .requestMatchers(HttpMethod.POST, "/v1/payments/*/cancel", "/payments/*/cancel").hasAuthority("SCOPE_payments:write")
+                .requestMatchers(HttpMethod.POST, "/v1/payments").hasAuthority("SCOPE_payments:write")
+                .requestMatchers(HttpMethod.POST, "/v1/payments/*/authorize").hasAuthority("SCOPE_payments:write")
+                .requestMatchers(HttpMethod.POST, "/v1/payments/*/capture").hasAuthority("SCOPE_payments:write")
+                .requestMatchers(HttpMethod.POST, "/v1/payments/*/cancel").hasAuthority("SCOPE_payments:write")
 
                 // Escopo payments:read para consulta
-                .requestMatchers(HttpMethod.GET, "/v1/payments/*", "/payments/*").hasAuthority("SCOPE_payments:read")
+                .requestMatchers(HttpMethod.GET, "/v1/payments/*").hasAuthority("SCOPE_payments:read")
 
                 // Escopo payments:admin para liquidação e marcação de falhas administrativas
-                .requestMatchers(HttpMethod.POST, "/v1/payments/*/settle", "/payments/*/settle").hasAuthority("SCOPE_payments:admin")
-                .requestMatchers(HttpMethod.POST, "/v1/payments/*/fail", "/payments/*/fail").hasAuthority("SCOPE_payments:admin")
+                .requestMatchers(HttpMethod.POST, "/v1/payments/*/settle").hasAuthority("SCOPE_payments:admin")
+                .requestMatchers(HttpMethod.POST, "/v1/payments/*/fail").hasAuthority("SCOPE_payments:admin")
 
                 .anyRequest().authenticated()
             )

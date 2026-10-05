@@ -280,6 +280,13 @@ class PaymentControllerTest {
             .andExpect(jsonPath("$.type").value("urn:problem-type:payment-not-found"));
     }
 
+    @Test
+    void legacyUnversionedEndpointReturnsNotFound() throws Exception {
+        mockMvc.perform(get("/payments/" + UUID.randomUUID())
+                .with(readJwt()))
+            .andExpect(status().isNotFound());
+    }
+
     // ---------- TRANSITIONS & ROLES ----------
 
     @Test
