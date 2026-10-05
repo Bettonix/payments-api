@@ -1,0 +1,108 @@
+{
+  "realm": "payments",
+  "enabled": true,
+  "clientScopes": [
+    {
+      "name": "payments:read",
+      "protocol": "openid-connect"
+    },
+    {
+      "name": "payments:write",
+      "protocol": "openid-connect"
+    },
+    {
+      "name": "payments:admin",
+      "protocol": "openid-connect"
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "merchant-acme",
+      "name": "Merchant Acme Client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "acme-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "publicClient": false,
+      "defaultClientScopes": [
+        "web-origins",
+        "roles",
+        "profile",
+        "email",
+        "payments:read",
+        "payments:write"
+      ],
+      "protocolMappers": [
+        {
+          "name": "merchant_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "merchant_id",
+            "claim.value": "acme",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "merchant-globex",
+      "name": "Merchant Globex Client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "globex-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "publicClient": false,
+      "defaultClientScopes": [
+        "web-origins",
+        "roles",
+        "profile",
+        "email",
+        "payments:read",
+        "payments:write"
+      ],
+      "protocolMappers": [
+        {
+          "name": "merchant_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "merchant_id",
+            "claim.value": "globex",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "payments-ops",
+      "name": "Payments Operations Admin",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "ops-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "publicClient": false,
+      "defaultClientScopes": [
+        "web-origins",
+        "roles",
+        "profile",
+        "email",
+        "payments:admin"
+      ]
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 # Build
+target/
 build/
 .gradle/
 out/
@@ -6,6 +7,7 @@ out/
 *.jar
 *.war
 *.ear
+!.mvn/wrapper/maven-wrapper.jar
 
 # IDE
 .idea/
@@ -18,7 +20,6 @@ out/
 # Logs
 *.log
 logs/
-build/reports/
 
 # OS
 .DS_Store

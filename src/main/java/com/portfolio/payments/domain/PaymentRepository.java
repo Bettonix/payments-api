@@ -11,7 +11,11 @@ import java.util.UUID;
  * camada application fica isolada do JPA.</p>
  */
 public interface PaymentRepository {
+    Payment insert(Payment payment);
     Payment save(Payment payment);
     Optional<Payment> findById(UUID id);
     Optional<Payment> findByIdempotencyKey(String key);
+    default Optional<Payment> findByMerchantIdAndIdempotencyKey(String merchantId, String key) {
+        return findByIdempotencyKey(key);
+    }
 }

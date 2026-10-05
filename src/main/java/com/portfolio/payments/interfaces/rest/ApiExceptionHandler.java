@@ -1,13 +1,16 @@
 package com.portfolio.payments.interfaces.rest;
 
 import com.portfolio.payments.domain.IdempotencyKeyConflictException;
+import com.portfolio.payments.domain.IdempotencyPayloadMismatchException;
 import com.portfolio.payments.domain.InvalidPaymentTransitionException;
 import com.portfolio.payments.domain.PaymentNotFoundException;
+import jakarta.persistence.OptimisticLockException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -23,8 +26,8 @@ import java.util.stream.Collectors;
 /**
  * Mapeia exceptions do domínio em respostas HTTP semânticas.
  *
- * <p>Antes deste advice, qualquer RuntimeException virava 500 com stacktrace
- * exposto — vazava detalhes internos e não dava info útil ao cliente.</p>
+ * <p>C7 Fix: Trata ObjectOptimisticLockingFailureException retornando HTTP 409 Conflict.
+ * C8 Fix: Trata IdempotencyPayloadMismatchException retornando HTTP 422 Unprocessable Entity.</p>
  */
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -39,13 +42,19 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(IdempotencyKeyConflictException.class)
     public ResponseEntity<Map<String, Object>> handleIdempotencyConflict(IdempotencyKeyConflictException ex) {
-        // 409 Conflict: a request raced with another using the same Idempotency-Key.
-        // Cliente deve fazer GET /payments/{id} (após retry com backoff) ou re-resolver o estado.
         log.info("idempotency conflict: key={}", ex.idempotencyKey());
         Map<String, Object> body = baseBody(HttpStatus.CONFLICT, "idempotency_conflict", ex.getMessage());
         body.put("idempotencyKey", ex.idempotencyKey());
         body.put("hint", "retry with exponential backoff, then GET /payments/{id} to resolve state");
         return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
+    @ExceptionHandler(IdempotencyPayloadMismatchException.class)
+    public ResponseEntity<Map<String, Object>> handlePayloadMismatch(IdempotencyPayloadMismatchException ex) {
+        log.warn("idempotency payload mismatch: {}", ex.getMessage());
+        Map<String, Object> body = baseBody(HttpStatus.UNPROCESSABLE_ENTITY, "idempotency_key_reused", ex.getMessage());
+        body.put("idempotencyKey", ex.idempotencyKey());
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body);
     }
 
     @ExceptionHandler(InvalidPaymentTransitionException.class)
@@ -55,6 +64,14 @@ public class ApiExceptionHandler {
         body.put("paymentId", ex.paymentId());
         body.put("from", ex.from().name());
         body.put("to", ex.to().name());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
+    @ExceptionHandler({ObjectOptimisticLockingFailureException.class, OptimisticLockException.class})
+    public ResponseEntity<Map<String, Object>> handleOptimisticLock(Exception ex) {
+        log.warn("optimistic lock failure during concurrent modification: {}", ex.getMessage());
+        Map<String, Object> body = baseBody(HttpStatus.CONFLICT, "concurrent_modification",
+            "The resource was modified concurrently by another transaction. Please retry.");
         return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     }
 
@@ -68,8 +85,6 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(HandlerMethodValidationException.class)
     public ResponseEntity<Map<String, Object>> handleHandlerMethodValidation(HandlerMethodValidationException ex) {
-        // Bean Validation em @RequestHeader, @PathVariable, @RequestParam
-        // (versus MethodArgumentNotValidException que cobre @RequestBody)
         String message = ex.getAllValidationResults().stream()
             .flatMap(vr -> vr.getResolvableErrors().stream())
             .map(err -> err.getDefaultMessage())

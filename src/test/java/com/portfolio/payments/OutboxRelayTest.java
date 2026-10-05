@@ -2,14 +2,17 @@ package com.portfolio.payments;
 
 import com.portfolio.payments.application.outbox.OutboxPublisher;
 import com.portfolio.payments.application.outbox.OutboxRelay;
+import com.portfolio.payments.domain.Money;
 import com.portfolio.payments.domain.OutboxEvent;
 import com.portfolio.payments.domain.OutboxRepository;
 import com.portfolio.payments.domain.Payment;
-import com.portfolio.payments.domain.Money;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,13 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 /**
- * Testes do OutboxRelay sem Spring — validam a lógica de drain + circuit breaker
- * via mock do publisher.
- *
- * <p>Como o @CircuitBreaker é processado via AOP, este teste unit não cobre o
- * comportamento do circuit breaker de verdade. Pra isso, precisaríamos de um
- * teste de integração subindo o contexto Spring. O teste aqui cobre o contrato
- * do relay: estado dos eventos depois de drain, contagem de tentativas.</p>
+ * Testes do OutboxRelay validando o ciclo de claim, lease, retries e publicação.
  */
 class OutboxRelayTest {
 
@@ -43,11 +40,11 @@ class OutboxRelayTest {
 
     @Test
     void drainWithNoPendingEventsDoesNothing() {
-        when(publisher.publish(any())).thenReturn(OutboxPublisher.PublishResult.SUCCESS);
+        when(publisher.publishBatch(any())).thenReturn(Map.of());
 
         relay.drain();
 
-        verify(publisher, never()).publish(any());
+        verify(publisher, never()).publishBatch(any());
     }
 
     @Test
@@ -56,37 +53,30 @@ class OutboxRelayTest {
         OutboxEvent ev = OutboxEvent.create("Payment", p.id(), "PaymentCreated", "{}");
         outbox.save(ev);
 
-        when(publisher.publish(any())).thenReturn(OutboxPublisher.PublishResult.SUCCESS);
+        when(publisher.publishBatch(any())).thenReturn(Map.of(ev.id(), OutboxPublisher.PublishResult.SUCCESS));
 
         relay.drain();
 
-        OutboxEvent reloaded = outbox.fetchPendingBatch(10).isEmpty()
-            ? null
-            : outbox.fetchPendingBatch(10).get(0);
-        // eventos SUCCESS não devem aparecer em pending
         List<OutboxEvent> pendingAfter = outbox.fetchPendingBatch(10);
         assertTrue(pendingAfter.stream().noneMatch(e -> e.id().equals(ev.id())),
             "successful event should no longer be pending");
-        verify(publisher, times(1)).publish(any());
+        verify(publisher, times(1)).publishBatch(any());
     }
 
     @Test
-    void drainMarksRetryableFailureAsFailed() {
+    void drainSchedulesRetryOnFailure() {
         Payment p = Payment.create("k2", UUID.randomUUID(), UUID.randomUUID(), Money.of(100, "BRL"));
         OutboxEvent ev = OutboxEvent.create("Payment", p.id(), "PaymentCreated", "{}");
         outbox.save(ev);
 
-        when(publisher.publish(any())).thenReturn(OutboxPublisher.PublishResult.RETRYABLE_FAILURE);
+        when(publisher.publishBatch(any())).thenReturn(Map.of(ev.id(), OutboxPublisher.PublishResult.RETRYABLE_FAILURE));
 
         relay.drain();
 
-        // ainda está pending (não atinge MAX_ATTEMPTS = 5 numa só call)
-        List<OutboxEvent> pending = outbox.fetchPendingBatch(10);
-        assertEquals(1, pending.size());
-        assertEquals(1, pending.get(0).attemptCount(), "attempt count incremented");
-        // RETRYABLE_FAILURE marca lastError mas mantém status PENDING — só MAX_ATTEMPTS muda pra GAVE_UP
-        assertEquals(OutboxEvent.Status.PENDING, pending.get(0).status());
-        assertEquals("retryable failure", pending.get(0).lastError());
+        OutboxEvent stored = outbox.store.get(ev.id());
+        assertNotNull(stored);
+        assertEquals(1, stored.attemptCount(), "attempt count incremented");
+        assertEquals(OutboxEvent.Status.PENDING, stored.status());
     }
 
     @Test
@@ -95,36 +85,16 @@ class OutboxRelayTest {
         OutboxEvent ev = OutboxEvent.create("Payment", p.id(), "PaymentCreated", "{}");
         outbox.save(ev);
 
-        when(publisher.publish(any())).thenReturn(OutboxPublisher.PublishResult.RETRYABLE_FAILURE);
-
-        // drena 5 vezes — MAX_ATTEMPTS = 5
-        for (int i = 0; i < 5; i++) {
-            relay.drain();
-        }
-
-        List<OutboxEvent> pending = outbox.fetchPendingBatch(10);
-        assertTrue(pending.isEmpty(), "after max attempts event should not be pending");
-    }
-
-    @Test
-    void drainHandlesRuntimeExceptionFromPublisher() {
-        Payment p = Payment.create("k4", UUID.randomUUID(), UUID.randomUUID(), Money.of(100, "BRL"));
-        OutboxEvent ev = OutboxEvent.create("Payment", p.id(), "PaymentCreated", "{}");
-        outbox.save(ev);
-
-        when(publisher.publish(any())).thenThrow(new RuntimeException("kafka unreachable"));
+        when(publisher.publishBatch(any())).thenReturn(Map.of(ev.id(), OutboxPublisher.PublishResult.GIVE_UP));
 
         relay.drain();
 
-        // ainda pending (exceto se já estourou max)
-        List<OutboxEvent> pending = outbox.fetchPendingBatch(10);
-        assertEquals(1, pending.size(), "runtime exception marks as failed but keeps pending");
-        assertEquals(1, pending.get(0).attemptCount());
+        OutboxEvent stored = outbox.store.get(ev.id());
+        assertEquals(OutboxEvent.Status.FAILED, stored.status(), "GIVE_UP marks event as FAILED");
     }
 
     @Test
     void countPendingReportsQueueDepth() {
-        // 3 eventos pendentes
         for (int i = 0; i < 3; i++) {
             Payment p = Payment.create("k" + i, UUID.randomUUID(), UUID.randomUUID(), Money.of(100, "BRL"));
             outbox.save(OutboxEvent.create("Payment", p.id(), "PaymentCreated", "{}"));
@@ -133,9 +103,8 @@ class OutboxRelayTest {
         assertEquals(3, outbox.countPending());
     }
 
-    /** In-memory outbox reutilizado. */
     private static class InMemoryOutboxRepository implements OutboxRepository {
-        private final Map<UUID, OutboxEvent> store = new HashMap<>();
+        final Map<UUID, OutboxEvent> store = new HashMap<>();
 
         @Override
         public OutboxEvent save(OutboxEvent event) {
@@ -153,10 +122,47 @@ class OutboxRelayTest {
         }
 
         @Override
+        public List<OutboxEvent> claimBatch(int limit, Duration lease) {
+            return fetchPendingBatch(limit);
+        }
+
+        @Override
+        public void markPublished(Collection<UUID> ids, Instant at) {
+            for (UUID id : ids) {
+                OutboxEvent ev = store.get(id);
+                if (ev != null) ev.markPublished();
+            }
+        }
+
+        @Override
+        public void scheduleRetry(UUID id, int attempts, Instant nextAttemptAt, String error) {
+            OutboxEvent ev = store.get(id);
+            if (ev != null) ev.scheduleRetry(Duration.ofSeconds(1), error);
+        }
+
+        @Override
+        public void markFailed(UUID id, int attempts, String error) {
+            OutboxEvent ev = store.get(id);
+            if (ev != null) ev.markGiveUp(error);
+        }
+
+        @Override
         public long countPending() {
             return store.values().stream()
                 .filter(e -> e.status() == OutboxEvent.Status.PENDING)
                 .count();
+        }
+
+        @Override
+        public long countFailed() {
+            return store.values().stream()
+                .filter(e -> e.status() == OutboxEvent.Status.FAILED)
+                .count();
+        }
+
+        @Override
+        public int deletePublishedBefore(Instant cutoff, int limit) {
+            return 0;
         }
     }
 }

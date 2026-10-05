@@ -8,8 +8,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.PostLoad;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Version;
+import org.springframework.data.domain.Persistable;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -19,24 +22,26 @@ import java.util.UUID;
 /**
  * JPA entity — representação tabular do agregado Payment.
  *
- * <p>Decisão: a entity vive em {@code infrastructure}, o domínio nem
- * sabe que JPA existe. Conversão para/domain via métodos estáticos
- * {@link #toDomain} e {@link #fromDomain}.</p>
- *
- * <p>{@code @Version} habilita optimistic locking — duas transações
- * concorrentes que tentam mudar o mesmo payment resultam em
- * OptimisticLockException, evitando double-spend.</p>
+ * <p>C1 Fix: Implementa {@link Persistable} com {@code isNew} flag para garantir
+ * que o Spring Data JPA invoque {@code persist()} em vez de {@code merge()},
+ * e troca {@code version} primitivo por wrapper {@link Long}.</p>
  */
 @Entity
 @Table(name = "payments")
-public class PaymentEntity {
+public class PaymentEntity implements Persistable<UUID> {
 
     @Id
     @Column(name = "id", nullable = false, updatable = false)
     private UUID id;
 
-    @Column(name = "idempotency_key", nullable = false, unique = true, length = 100)
+    @Column(name = "merchant_id", nullable = false, length = 64)
+    private String merchantId;
+
+    @Column(name = "idempotency_key", nullable = false, length = 100)
     private String idempotencyKey;
+
+    @Column(name = "request_fingerprint", length = 64)
+    private String requestFingerprint;
 
     @Column(name = "payer_id", nullable = false)
     private UUID payerId;
@@ -64,15 +69,20 @@ public class PaymentEntity {
     private Instant updatedAt;
 
     @Version
-    @Column(name = "version", nullable = false)
-    private long version;
+    @Column(name = "version")
+    private Long version;
+
+    @Transient
+    private boolean isNew = true;
 
     protected PaymentEntity() { /* JPA */ }
 
     public static PaymentEntity fromDomain(Payment p) {
         PaymentEntity e = new PaymentEntity();
         e.id = p.id();
+        e.merchantId = p.merchantId();
         e.idempotencyKey = p.idempotencyKey();
+        e.requestFingerprint = p.requestFingerprint();
         e.payerId = p.payerId();
         e.payeeId = p.payeeId();
         e.amount = p.amount().amount();
@@ -81,15 +91,11 @@ public class PaymentEntity {
         e.failureReason = p.failureReason();
         e.createdAt = p.createdAt();
         e.updatedAt = p.updatedAt();
+        e.version = p.version();
+        e.isNew = (p.version() == null);
         return e;
     }
 
-    /**
-     * Updates the mutable fields from the domain aggregate in-place.
-     * Identity (id, idempotency_key, payer_id, payee_id, amount, currency,
-     * created_at) is preserved — only status, failure_reason, and updated_at
-     * are mutated. This keeps the JPA {@code @Version} counter coherent.
-     */
     public void updateFrom(Payment p) {
         this.status = p.status();
         this.failureReason = p.failureReason();
@@ -98,13 +104,26 @@ public class PaymentEntity {
 
     public Payment toDomain() {
         return Payment.rehydrate(
-            id, idempotencyKey, payerId, payeeId,
+            id, merchantId, idempotencyKey, requestFingerprint, payerId, payeeId,
             new Money(amount, Currency.getInstance(currency)),
-            status, createdAt, updatedAt, failureReason);
+            status, createdAt, updatedAt, failureReason, version);
     }
 
+    @PostLoad
+    void markNotNew() {
+        this.isNew = false;
+    }
+
+    @Override
+    public boolean isNew() {
+        return isNew;
+    }
+
+    @Override
     public UUID getId() { return id; }
+    public String getMerchantId() { return merchantId; }
     public String getIdempotencyKey() { return idempotencyKey; }
+    public String getRequestFingerprint() { return requestFingerprint; }
     public UUID getPayerId() { return payerId; }
     public UUID getPayeeId() { return payeeId; }
     public BigDecimal getAmount() { return amount; }
@@ -113,5 +132,5 @@ public class PaymentEntity {
     public String getFailureReason() { return failureReason; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
-    public long getVersion() { return version; }
+    public Long getVersion() { return version; }
 }

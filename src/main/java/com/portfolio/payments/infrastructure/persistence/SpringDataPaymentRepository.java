@@ -15,4 +15,7 @@ public interface SpringDataPaymentRepository extends JpaRepository<PaymentEntity
 
     @Query("SELECT p FROM PaymentEntity p WHERE p.idempotencyKey = :key")
     Optional<PaymentEntity> findByIdempotencyKey(@Param("key") String key);
+
+    @Query("SELECT p FROM PaymentEntity p WHERE p.merchantId = :merchantId AND p.idempotencyKey = :key")
+    Optional<PaymentEntity> findByMerchantIdAndIdempotencyKey(@Param("merchantId") String merchantId, @Param("key") String key);
 }

@@ -6,12 +6,13 @@ package com.portfolio.payments.domain;
  * <p>Transições permitidas (state machine estrita):
  * <pre>
  *   PENDING ──▶ AUTHORIZED ──▶ CAPTURED ──▶ SETTLED
- *      │             │
+ *      │             │             │
+ *      │             │             └──▶ FAILED
  *      │             └──▶ FAILED
  *      └──▶ FAILED
  *      └──▶ CANCELLED
  * </pre>
- * Qualquer outra transição lança {@link IllegalStateException}.</p>
+ * Qualquer outra transição lança {@link InvalidPaymentTransitionException}.</p>
  */
 public enum PaymentStatus {
     PENDING,

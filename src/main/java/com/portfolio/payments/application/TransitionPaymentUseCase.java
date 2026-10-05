@@ -1,9 +1,11 @@
 package com.portfolio.payments.application;
 
 import com.portfolio.payments.application.metrics.PaymentMetrics;
+import com.portfolio.payments.application.port.EventSerializer;
 import com.portfolio.payments.domain.OutboxEvent;
 import com.portfolio.payments.domain.OutboxRepository;
 import com.portfolio.payments.domain.Payment;
+import com.portfolio.payments.domain.PaymentEvent;
 import com.portfolio.payments.domain.PaymentNotFoundException;
 import com.portfolio.payments.domain.PaymentRepository;
 import com.portfolio.payments.domain.PaymentStatus;
@@ -12,16 +14,17 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
  * Use case: drive a Payment through its state machine.
  *
  * <p>Resolves the payment by id, asks the aggregate to apply the transition
- * (which enforces the state machine), then persists. The whole flow runs
- * in a single transaction so concurrent callers see a consistent state.</p>
+ * (which enforces the state machine), then persists.
  *
- * <p>Emits a {@code PaymentTransitioned} outbox event in the same TX.</p>
+ * <p>C3 Fix: Serializa domain events através de {@link EventSerializer},
+ * eliminando montagem manual de JSON.</p>
  */
 @Service
 public class TransitionPaymentUseCase {
@@ -31,11 +34,22 @@ public class TransitionPaymentUseCase {
     private final PaymentRepository repository;
     private final OutboxRepository outbox;
     private final PaymentMetrics metrics;
+    private final EventSerializer serializer;
 
-    public TransitionPaymentUseCase(PaymentRepository repository, OutboxRepository outbox, PaymentMetrics metrics) {
+    public TransitionPaymentUseCase(PaymentRepository repository,
+                                    OutboxRepository outbox,
+                                    PaymentMetrics metrics,
+                                    EventSerializer serializer) {
         this.repository = repository;
         this.outbox = outbox;
         this.metrics = metrics;
+        this.serializer = serializer;
+    }
+
+    public TransitionPaymentUseCase(PaymentRepository repository,
+                                    OutboxRepository outbox,
+                                    PaymentMetrics metrics) {
+        this(repository, outbox, metrics, event -> "{\"eventType\":\"" + event.eventType() + "\"}");
     }
 
     @Transactional
@@ -47,16 +61,15 @@ public class TransitionPaymentUseCase {
         applyTransition(payment, transition, reason);
         Payment saved = repository.save(payment);
 
-        outbox.save(OutboxEvent.create("Payment", saved.id(),
-            "PaymentTransitioned",
-            "{\"id\":\"" + saved.id() + "\","
-            + "\"from\":\"" + before + "\","
-            + "\"to\":\"" + saved.status() + "\","
-            + "\"reason\":\"" + (reason == null ? "" : reason) + "\"}"));
+        List<PaymentEvent> events = payment.pullEvents();
+        for (PaymentEvent event : events) {
+            String payload = serializer.serialize(event);
+            outbox.save(OutboxEvent.create(saved.merchantId(), "Payment", saved.id(), event.eventType(), payload));
+        }
 
         log.info("payment transitioned id={} {} -> {} via {}",
             saved.id(), before, saved.status(), transition);
-        metrics.recordTransition();
+        metrics.recordTransition(before, saved.status());
 
         return saved;
     }
@@ -71,7 +84,7 @@ public class TransitionPaymentUseCase {
         }
     }
 
-    /** Allowed operations exposed via PATCH /payments/{id}/{transition}. */
+    /** Allowed operations exposed via REST. */
     public enum Transition {
         AUTHORIZE, CAPTURE, SETTLE, FAIL, CANCEL
     }

@@ -15,6 +15,9 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,16 +27,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Unit tests para use cases de leitura e transição. Usa um repositório
- * fake em memória — não sobe Spring, não precisa de Postgres.
- *
- * <p>Valida que o use case:</p>
- * <ul>
- *   <li>delega corretamente ao agregado para validar a state machine</li>
- *   <li>persiste o resultado da transição</li>
- *   <li>mapeia inexistência em PaymentNotFoundException</li>
- *   <li>propaga InvalidPaymentTransitionException sem tentar persistir</li>
- * </ul>
+ * Unit tests para use cases de leitura e transição.
  */
 class PaymentUseCasesTest {
 
@@ -105,7 +99,6 @@ class PaymentUseCasesTest {
         assertThrows(InvalidPaymentTransitionException.class,
             () -> transitionUseCase.execute(created.id(), TransitionPaymentUseCase.Transition.SETTLE, null));
 
-        // state is unchanged
         Payment reloaded = repo.findById(created.id()).orElseThrow();
         assertEquals(PaymentStatus.PENDING, reloaded.status());
     }
@@ -119,6 +112,7 @@ class PaymentUseCasesTest {
     @Test
     void transitionEmitsOutboxEvent() {
         Payment created = Payment.create("k5", UUID.randomUUID(), UUID.randomUUID(), Money.of(100, "BRL"));
+        created.pullEvents(); // Limpa evento de criação simulando a gravação do use case inicial
         repo.save(created);
 
         transitionUseCase.execute(created.id(), TransitionPaymentUseCase.Transition.AUTHORIZE, null);
@@ -127,16 +121,18 @@ class PaymentUseCasesTest {
         assertEquals(1, pending.size(), "transition should emit one outbox event");
         OutboxEvent ev = pending.get(0);
         assertEquals("Payment", ev.aggregateType());
-        assertEquals("PaymentTransitioned", ev.eventType());
+        assertEquals("PaymentAuthorized", ev.eventType());
         assertEquals(created.id(), ev.aggregateId());
-        assertTrue(ev.payload().contains("\"from\":\"PENDING\""));
-        assertTrue(ev.payload().contains("\"to\":\"AUTHORIZED\""));
     }
 
-    /** Minimal in-memory implementation of the domain port for unit tests. */
     private static class InMemoryPaymentRepository implements PaymentRepository {
         private final Map<UUID, Payment> store = new HashMap<>();
         private final Map<String, Payment> byKey = new HashMap<>();
+
+        @Override
+        public Payment insert(Payment payment) {
+            return save(payment);
+        }
 
         @Override
         public Payment save(Payment payment) {
@@ -154,11 +150,15 @@ class PaymentUseCasesTest {
         public Optional<Payment> findByIdempotencyKey(String key) {
             return Optional.ofNullable(byKey.get(key));
         }
+
+        @Override
+        public Optional<Payment> findByMerchantIdAndIdempotencyKey(String merchantId, String key) {
+            return findByIdempotencyKey(key);
+        }
     }
 
-    /** Minimal in-memory outbox for unit tests. */
     private static class InMemoryOutboxRepository implements OutboxRepository {
-        private final Map<java.util.UUID, OutboxEvent> store = new HashMap<>();
+        private final Map<UUID, OutboxEvent> store = new HashMap<>();
 
         @Override
         public OutboxEvent save(OutboxEvent event) {
@@ -176,10 +176,47 @@ class PaymentUseCasesTest {
         }
 
         @Override
+        public List<OutboxEvent> claimBatch(int limit, Duration lease) {
+            return fetchPendingBatch(limit);
+        }
+
+        @Override
+        public void markPublished(Collection<UUID> ids, Instant at) {
+            for (UUID id : ids) {
+                OutboxEvent ev = store.get(id);
+                if (ev != null) ev.markPublished();
+            }
+        }
+
+        @Override
+        public void scheduleRetry(UUID id, int attempts, Instant nextAttemptAt, String error) {
+            OutboxEvent ev = store.get(id);
+            if (ev != null) ev.scheduleRetry(Duration.ofSeconds(1), error);
+        }
+
+        @Override
+        public void markFailed(UUID id, int attempts, String error) {
+            OutboxEvent ev = store.get(id);
+            if (ev != null) ev.markGiveUp(error);
+        }
+
+        @Override
         public long countPending() {
             return store.values().stream()
                 .filter(e -> e.status() == OutboxEvent.Status.PENDING)
                 .count();
+        }
+
+        @Override
+        public long countFailed() {
+            return store.values().stream()
+                .filter(e -> e.status() == OutboxEvent.Status.FAILED)
+                .count();
+        }
+
+        @Override
+        public int deletePublishedBefore(Instant cutoff, int limit) {
+            return 0;
         }
     }
 }

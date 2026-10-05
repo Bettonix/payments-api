@@ -10,15 +10,24 @@ import java.util.Objects;
  *
  * <p>Decisões: usar {@link BigDecimal} (não double) + moeda explícita.
  * Equals/hashCode baseiam-se em valor + moeda — duas quantias em moedas
- * diferentes nunca são iguais.</p>
+ * diferentes nunca são iguais.
+ *
+ * <p>C9 Fix: Rejeita escala maior que as casas decimais permitidas pela moeda
+ * para evitar arredondamento silencioso.</p>
  */
 public record Money(BigDecimal amount, Currency currency) {
 
     public Money {
         Objects.requireNonNull(amount, "amount required");
         Objects.requireNonNull(currency, "currency required");
-        if (amount.scale() != currency.getDefaultFractionDigits()) {
-            amount = amount.setScale(currency.getDefaultFractionDigits(), RoundingMode.HALF_EVEN);
+        int maxFractionDigits = currency.getDefaultFractionDigits();
+        if (amount.scale() > maxFractionDigits) {
+            throw new IllegalArgumentException(
+                "amount scale " + amount.scale() + " exceeds currency "
+                + currency.getCurrencyCode() + " fraction digits (" + maxFractionDigits + ")");
+        }
+        if (amount.scale() < maxFractionDigits) {
+            amount = amount.setScale(maxFractionDigits, RoundingMode.UNNECESSARY);
         }
     }
 
@@ -28,6 +37,10 @@ public record Money(BigDecimal amount, Currency currency) {
 
     public static Money of(String amount, String currencyCode) {
         return new Money(new BigDecimal(amount), Currency.getInstance(currencyCode));
+    }
+
+    public static Money of(BigDecimal amount, String currencyCode) {
+        return new Money(amount, Currency.getInstance(currencyCode));
     }
 
     public Money plus(Money other) {

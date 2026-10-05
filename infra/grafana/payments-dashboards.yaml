@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: 'Payments Dashboards'
+    orgId: 1
+    folder: 'Payments'
+    folderUid: 'payments-folder'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /otel-lgtm/grafana/conf/provisioning/dashboards/payments

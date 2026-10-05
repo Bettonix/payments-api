@@ -1,39 +1,56 @@
 # payments-api/Makefile
-# Conveniência sobre gradle. Uso: make <target>
+# Conveniência sobre Maven e Docker Compose. Uso: make <target>
 
-.PHONY: help build test run clean fmt lint compose-up compose-down logs
+.PHONY: help build test it run clean fmt up up-core down nuke ps logs-infra token
 
-POSTGRES_HOST ?=127.0.0.1
-POSTGRES_PORT ?=5432
-POSTGRES_DB   ?=payments_api
-REDIS_HOST    ?=127.0.0.1
-REDIS_PORT    ?=6379
+MVNW := ./mvnw
+ifeq ($(OS),Windows_NT)
+  # Se rodando em cmd/powershell sem bash, use mvnw.cmd
+  SHELL := bash.exe
+endif
 
-help:
+help: ## Exibe esta ajuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-build: ## compila tudo
-	./gradlew build -x test
+build: ## Compila o projeto
+	$(MVNW) compile
 
-test: ## roda testes unit + integration
-	./gradlew test
+test: ## Executa os testes unitários
+	$(MVNW) test
 
-run: ## sobe a API na porta 8080
-	POSTGRES_HOST=$(POSTGRES_HOST) POSTGRES_PORT=$(POSTGRES_PORT) \
-	REDIS_HOST=$(REDIS_HOST) REDIS_PORT=$(REDIS_PORT) \
-	./gradlew bootRun
+it: ## Executa a suíte de integração
+	$(MVNW) verify
 
-clean: ## limpa build/
-	./gradlew clean
+run: ## Executa a API com profile local (porta 8181)
+	SPRING_PROFILES_ACTIVE=local $(MVNW) spring-boot:run
 
-fmt:
-	./gradlew spotlessApply
+clean: ## Limpa os artefatos de build (target/)
+	$(MVNW) clean
 
-lint:
-	./gradlew check
+fmt: ## Aplica formatação de código
+	$(MVNW) spotless:apply
 
-compose-up: ## sobe postgres + redis local
-	@echo "use docker compose se disponível; este projeto não inclui compose por padrão"
+up: ## Sobe toda a infraestrutura local (Postgres, Redis, Kafka, Kafka UI, Keycloak, LGTM)
+	docker compose --profile tools --profile auth --profile obs up -d
 
-logs:
-	@ls -la build/reports/tests/test/ 2>/dev/null || echo "rode 'make test' primeiro"
+up-core: ## Sobe apenas a infraestrutura essencial (Postgres, Redis, Kafka)
+	docker compose up -d postgres redis kafka
+
+down: ## Para todos os serviços do docker compose
+	docker compose --profile tools --profile auth --profile obs down
+
+nuke: ## Destrói containers e volumes persistentes
+	docker compose --profile tools --profile auth --profile obs down -v
+
+ps: ## Lista status dos containers do projeto
+	docker compose ps
+
+logs-infra: ## Visualiza logs da infraestrutura
+	docker compose logs -f
+
+token: ## Obtém um token JWT de teste para o merchant-acme via Keycloak
+	@curl -s -X POST http://localhost:8080/realms/payments/protocol/openid-connect/token \
+		-d "grant_type=client_credentials" \
+		-d "client_id=merchant-acme" \
+		-d "client_secret=acme-secret" \
+		-d "scope=payments:read payments:write" | grep -o '"access_token":"[^"]*' | cut -d'"' -f4

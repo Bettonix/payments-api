@@ -1,28 +1,26 @@
 package com.portfolio.payments.application.metrics;
 
+import com.portfolio.payments.domain.PaymentStatus;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Component;
 
+import java.util.function.Supplier;
+
 /**
  * Custom business metrics for payments.
  *
- * <p>Why custom metrics on top of the built-in Spring/Hikari/JVM ones?
- * Because business-relevant counters (created vs replayed, transitions
- * by target status, outbox backlog) are what you actually alert on in
- * production — they're not in the defaults.</p>
- *
- * <p>Exposed via /actuator/prometheus and consumed by Grafana / Datadog
- * / whatever scrape target.</p>
+ * <p>Métricas de negócio para criação, replays de idempotência,
+ * transições de estado com tags e monitoramento de backlog.</p>
  */
 @Component
 public class PaymentMetrics {
 
+    private final MeterRegistry registry;
     private final Counter createdCounter;
     private final Counter replayedCounter;
     private final Counter transitionCounter;
-    private final MeterRegistry registry;
 
     public PaymentMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -41,6 +39,15 @@ public class PaymentMetrics {
         createdCounter.increment();
     }
 
+    public void recordCreated(String currency) {
+        recordCreated();
+        Counter.builder("payments_created_total")
+            .description("payments successfully created by currency")
+            .tag("currency", currency != null ? currency : "UNKNOWN")
+            .register(registry)
+            .increment();
+    }
+
     public void recordReplayed() {
         replayedCounter.increment();
     }
@@ -49,8 +56,17 @@ public class PaymentMetrics {
         transitionCounter.increment();
     }
 
-    /** Registers a gauge backed by a supplier (e.g. outbox backlog). */
-    public Gauge registerGauge(String name, String description, java.util.function.Supplier<Number> supplier) {
+    public void recordTransition(PaymentStatus from, PaymentStatus to) {
+        recordTransition();
+        Counter.builder("payments_transitioned_total")
+            .description("state transitions applied with tags")
+            .tag("from", from != null ? from.name() : "NONE")
+            .tag("to", to != null ? to.name() : "NONE")
+            .register(registry)
+            .increment();
+    }
+
+    public Gauge registerGauge(String name, String description, Supplier<Number> supplier) {
         return Gauge.builder(name, supplier)
             .description(description)
             .register(registry);
