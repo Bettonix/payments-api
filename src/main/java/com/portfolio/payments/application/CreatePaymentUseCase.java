@@ -77,35 +77,40 @@ public class CreatePaymentUseCase {
 
     @Transactional
     public Result execute(String merchantId, String idempotencyKey, UUID payerId, UUID payeeId, Money amount) {
-        String fingerprint = RequestFingerprint.compute(payerId, payeeId, amount);
+        long startNanos = System.nanoTime();
+        try {
+            String fingerprint = RequestFingerprint.compute(payerId, payeeId, amount);
 
-        // 1. Tentar adquirir lock distribuído no Redis (ou fail-open se Redis indisponível)
-        IdempotencyStore.AcquireResult acquireResult =
-            idempotencyStore.tryAcquire(merchantId, idempotencyKey, fingerprint);
+            // 1. Tentar adquirir lock distribuído no Redis (ou fail-open se Redis indisponível)
+            IdempotencyStore.AcquireResult acquireResult =
+                idempotencyStore.tryAcquire(merchantId, idempotencyKey, fingerprint);
 
-        if (acquireResult instanceof IdempotencyStore.AcquireResult.InProgress) {
-            log.info("idempotency in-progress lock detected in redis: key={} merchant={}", idempotencyKey, merchantId);
-            throw new IdempotencyKeyConflictException(idempotencyKey);
+            if (acquireResult instanceof IdempotencyStore.AcquireResult.InProgress) {
+                log.info("idempotency in-progress lock detected in redis: key={} merchant={}", idempotencyKey, merchantId);
+                throw new IdempotencyKeyConflictException(idempotencyKey);
+            }
+
+            if (acquireResult instanceof IdempotencyStore.AcquireResult.PayloadMismatch) {
+                log.warn("idempotency payload mismatch in redis: key={} merchant={}", idempotencyKey, merchantId);
+                throw new IdempotencyPayloadMismatchException(idempotencyKey);
+            }
+
+            if (acquireResult instanceof IdempotencyStore.AcquireResult.Completed completed) {
+                return repository.findById(completed.paymentId())
+                    .filter(p -> p.merchantId().equals(merchantId))
+                    .map(existing -> {
+                        log.info("idempotent replay from redis completed key: key={} paymentId={} merchant={}",
+                            idempotencyKey, existing.id(), merchantId);
+                        metrics.recordReplayed();
+                        return Result.replayed(existing);
+                    })
+                    .orElseGet(() -> ingestAndAccept(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount));
+            }
+
+            return ingestAndAccept(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount);
+        } finally {
+            metrics.recordIngressLatency(System.nanoTime() - startNanos);
         }
-
-        if (acquireResult instanceof IdempotencyStore.AcquireResult.PayloadMismatch) {
-            log.warn("idempotency payload mismatch in redis: key={} merchant={}", idempotencyKey, merchantId);
-            throw new IdempotencyPayloadMismatchException(idempotencyKey);
-        }
-
-        if (acquireResult instanceof IdempotencyStore.AcquireResult.Completed completed) {
-            return repository.findById(completed.paymentId())
-                .filter(p -> p.merchantId().equals(merchantId))
-                .map(existing -> {
-                    log.info("idempotent replay from redis completed key: key={} paymentId={} merchant={}",
-                        idempotencyKey, existing.id(), merchantId);
-                    metrics.recordReplayed();
-                    return Result.replayed(existing);
-                })
-                .orElseGet(() -> ingestAndAccept(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount));
-        }
-
-        return ingestAndAccept(merchantId, idempotencyKey, fingerprint, payerId, payeeId, amount);
     }
 
     private Result ingestAndAccept(String merchantId, String idempotencyKey, String fingerprint,

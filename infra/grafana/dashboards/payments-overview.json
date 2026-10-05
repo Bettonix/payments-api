@@ -311,6 +311,75 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "title": "Latency Breakdown by Phase (p50 Mediana)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(payments_latency_ingress_seconds_bucket[1m]))) or histogram_quantile(0.50, sum by (le) (rate(payments_latency_ingress_seconds_bucket[5m])))",
+          "legendFormat": "1. Ingress (Borda até 202) p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(payments_latency_queue_transit_seconds_bucket[1m]))) or histogram_quantile(0.50, sum by (le) (rate(payments_latency_queue_transit_seconds_bucket[5m])))",
+          "legendFormat": "2. Queue Transit (Kafka Ingress) p50",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(payments_latency_db_persistence_seconds_bucket[1m]))) or histogram_quantile(0.50, sum by (le) (rate(payments_latency_db_persistence_seconds_bucket[5m])))",
+          "legendFormat": "3. DB Persistence (PostgreSQL ACID) p50",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(payments_latency_e2e_total_seconds_bucket[1m]))) or histogram_quantile(0.50, sum by (le) (rate(payments_latency_e2e_total_seconds_bucket[5m])))",
+          "legendFormat": "4. E2E Total (Req até Persistência) p50",
+          "refId": "D"
+        }
+      ]
     }
   ],
   "refresh": "5s",

@@ -23,21 +23,32 @@ public class PaymentIngressConsumer {
 
     private final PaymentIngressService ingressService;
     private final ObjectMapper objectMapper;
+    private final com.portfolio.payments.application.metrics.PaymentMetrics metrics;
 
     @Autowired
-    public PaymentIngressConsumer(PaymentIngressService ingressService, ObjectMapper objectMapper) {
+    public PaymentIngressConsumer(PaymentIngressService ingressService,
+                                  ObjectMapper objectMapper,
+                                  com.portfolio.payments.application.metrics.PaymentMetrics metrics) {
         this.ingressService = ingressService;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
     }
 
     @KafkaListener(
         topics = "${app.kafka.topics.ingress:payments.ingress}",
         groupId = "${app.kafka.ingress-group:payments-ingress-workers}",
-        concurrency = "${app.kafka.ingress-concurrency:3}"
+        concurrency = "${app.kafka.ingress-concurrency:10}"
     )
     public void onMessage(ConsumerRecord<String, String> record) {
         try {
             PaymentIngressCommand command = objectMapper.readValue(record.value(), PaymentIngressCommand.class);
+            if (command.requestedAt() != null) {
+                long transitNanos = java.time.Duration.between(command.requestedAt(), java.time.Instant.now()).toNanos();
+                if (transitNanos > 0) {
+                    metrics.recordQueueTransitLatency(transitNanos);
+                }
+            }
+
             log.debug("consumed payment ingress command from partition={} offset={} paymentId={}",
                 record.partition(), record.offset(), command.paymentId());
             ingressService.process(command);

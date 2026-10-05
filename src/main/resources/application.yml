@@ -89,6 +89,10 @@ management:
     distribution:
       percentiles-histogram:
         http.server.requests: true
+        payments.latency.ingress: true
+        payments.latency.queue.transit: true
+        payments.latency.db.persistence: true
+        payments.latency.e2e.total: true
   tracing:
     sampling:
       probability: ${TRACING_PROBABILITY:1.0}

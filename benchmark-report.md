@@ -1,6 +1,6 @@
 # 📊 Relatório Executivo de Benchmark & Carga da API de Pagamentos (100k)
 
-> **Data da Execução:** 2026-10-05T18:14:46.477034210Z
+> **Data da Execução:** 2026-10-05T18:45:41.524843815Z
 > **Ambiente:** Local / WSL 2 (Debian 13) • Java 21 LTS (Virtual Threads)
 > **Alvo Testado:** `http://localhost:8181`
 
@@ -10,31 +10,31 @@
 
 | Fase do Benchmark | Total Requisições | Throughput (RPS) | Latência p50 | Latência p95 | Latência p99 | Status Predominante |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1. Ingestão Assíncrona (POST /v1/payments)** | 20,000 | **1392.3 req/s** | 35.48 ms | 102.59 ms | 146.98 ms | HTTP 202 Accepted (20000) |
-| **2. Replay Idempotente (Redis)** | 2,000 | **1649.6 req/s** | 30.77 ms | 82.35 ms | 113.44 ms | HTTP 200 OK (Replay) (2000) |
-| **3. Transições (POST /authorize)** | 5,000 | **881.0 req/s** | 58.21 ms | 142.60 ms | 209.34 ms | HTTP 200 OK (5000) |
+| **1. Ingestão Assíncrona (POST /v1/payments)** | 10,000 | **703.2 req/s** | 59.28 ms | 147.03 ms | 226.22 ms | HTTP 202 Accepted (10000) |
+| **2. Replay Idempotente (Redis)** | 2,000 | **1108.4 req/s** | 40.77 ms | 91.24 ms | 115.28 ms | HTTP 200 OK (Replay) (2000) |
+| **3. Transições (POST /authorize)** | 5,000 | **605.2 req/s** | 73.55 ms | 164.87 ms | 222.77 ms | HTTP 200 OK (5000) |
 
 ---
 
 ## 🔬 Análise de Performance & Resiliência Distribuída
 
 ### 1. Ingestão Assíncrona vs Replay em Cache
-* **Latência Média de Ingestão (Redis CAS + Kafka Ingress):** `42.88 ms`
-* **Latência Média de Replay (Redis Lua CAS Hit):** `35.81 ms`
-* **Fator de Aceleração do Cache de Idempotência:** **1.2x mais rápido** que o ciclo de ingestão.
+* **Latência Média de Ingestão (Redis CAS + Kafka Ingress):** `70.77 ms`
+* **Latência Média de Replay (Redis Lua CAS Hit):** `44.36 ms`
+* **Fator de Aceleração do Cache de Idempotência:** **1.6x mais rápido** que o ciclo de ingestão.
 
 ### 2. Distribuição Completa de Percentis (Fase de Criação)
 
 | Métrica | Valor |
 | :--- | :--- |
-| **Tempo Total de Execução** | `14.36 segundos (0.2 minutos)` |
-| **Throughput Médio** | `1392.3 requisições/segundo` |
-| **Latência Mínima** | `3.19 ms` |
-| **Latência p50 (Mediana)** | `35.48 ms` |
-| **Latência p90** | `84.09 ms` |
-| **Latência p95** | `102.59 ms` |
-| **Latência p99** | `146.98 ms` |
-| **Latência Máxima** | `363.40 ms` |
+| **Tempo Total de Execução** | `14.22 segundos (0.2 minutos)` |
+| **Throughput Médio** | `703.2 requisições/segundo` |
+| **Latência Mínima** | `6.52 ms` |
+| **Latência p50 (Mediana)** | `59.28 ms` |
+| **Latência p90** | `120.86 ms` |
+| **Latência p95** | `147.03 ms` |
+| **Latência p99** | `226.22 ms` |
+| **Latência Máxima** | `1045.14 ms` |
 
 ---
 

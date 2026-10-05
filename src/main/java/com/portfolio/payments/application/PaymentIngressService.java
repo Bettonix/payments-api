@@ -63,6 +63,7 @@ public class PaymentIngressService {
             return p;
         }
 
+        long dbStartNanos = System.nanoTime();
         boolean success = false;
         try {
             Payment payment = Payment.createWithId(
@@ -95,6 +96,16 @@ public class PaymentIngressService {
 
             idempotencyStore.complete(command.merchantId(), command.idempotencyKey(), saved.id(), command.fingerprint());
             success = true;
+
+            long dbDuration = System.nanoTime() - dbStartNanos;
+            metrics.recordDbPersistenceLatency(dbDuration);
+            if (command.requestedAt() != null) {
+                long e2eDuration = java.time.Duration.between(command.requestedAt(), java.time.Instant.now()).toNanos();
+                if (e2eDuration > 0) {
+                    metrics.recordE2eLatency(e2eDuration);
+                }
+            }
+
             return saved;
         } finally {
             if (!success) {
