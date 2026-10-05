@@ -254,6 +254,15 @@ bash scripts/test-e2e.sh
 ```
 O script valida autenticação Keycloak, criação com idempotência, replay, conflito 422, transições de estado, bloqueio BOLA 404, tabelas do Outbox e consumo de eventos no Kafka.
 
+### 5. Executar Benchmark de Alta Performance (10.000 Requisições)
+Gere uma carga massiva de 10.000 pagamentos realistas e meça a performance com **Java 21 Virtual Threads**:
+```bash
+make bench
+# Ou com parâmetros personalizados:
+bash scripts/benchmark.sh --total 10000 --concurrency 50
+```
+O benchmark gera automaticamente o relatório consolidado em [benchmark-report.md](benchmark-report.md) com Throughput (RPS), percentis de latência (p50, p95, p99) e distribuição de status HTTP.
+
 ---
 
 ## 💡 Exemplos de Uso (cURL Interativo)

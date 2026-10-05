@@ -1,7 +1,7 @@
 # payments-api/Makefile
 # Conveniência sobre Maven e Docker Compose. Uso: make <target>
 
-.PHONY: help build test it run clean fmt up up-core down nuke ps logs-infra token
+.PHONY: help build test it bench run clean fmt up up-core down nuke ps logs-infra token
 
 MVNW := ./mvnw
 ifeq ($(OS),Windows_NT)
@@ -20,6 +20,9 @@ test: ## Executa os testes unitários
 
 it: ## Executa a suíte de integração
 	$(MVNW) verify
+
+bench: ## Executa o benchmark e gerador de 10.000 pagamentos mocados
+	bash scripts/benchmark.sh --total 10000 --concurrency 50
 
 run: ## Executa a API com profile local (porta 8181)
 	SPRING_PROFILES_ACTIVE=local $(MVNW) spring-boot:run
