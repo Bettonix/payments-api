@@ -5,15 +5,27 @@ import com.portfolio.payments.application.GetPaymentUseCase;
 import com.portfolio.payments.application.TransitionPaymentUseCase;
 import com.portfolio.payments.domain.Money;
 import com.portfolio.payments.domain.Payment;
+import com.portfolio.payments.domain.PreconditionFailedException;
+import com.portfolio.payments.interfaces.rest.dto.CreatePaymentRequest;
+import com.portfolio.payments.interfaces.rest.dto.FailPaymentRequest;
+import com.portfolio.payments.interfaces.rest.dto.PaymentResponse;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.headers.Header;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -25,13 +37,11 @@ import java.net.URI;
 import java.util.UUID;
 
 /**
- * API REST de pagamentos.
- *
- * <p>Idempotency-safe via header {@code Idempotency-Key} no POST.
- * Transitions de estado controladas via PATCH (path segment = transition).</p>
+ * API REST v1 de pagamentos seguindo padrão de mercado (estilo Stripe).
  */
 @RestController
-@RequestMapping("/payments")
+@RequestMapping({"/v1/payments", "/payments"})
+@Tag(name = "Payments", description = "Operações de criação, consulta e transição de pagamentos")
 public class PaymentController {
 
     private final CreatePaymentUseCase createPayment;
@@ -46,84 +56,135 @@ public class PaymentController {
         this.transitionPayment = transitionPayment;
     }
 
-    @PostMapping
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Criar ou reproduzir pagamento", description = "Garante idempotência estrita via header Idempotency-Key.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "201", description = "Pagamento criado ou reproduzido com sucesso",
+            headers = {
+                @Header(name = "Location", description = "URI do recurso criado", schema = @Schema(type = "string")),
+                @Header(name = "ETag", description = "Identificador de versão da entidade", schema = @Schema(type = "string")),
+                @Header(name = "Idempotent-Replayed", description = "Presente quando a resposta foi recuperada de replay", schema = @Schema(type = "boolean"))
+            },
+            content = @Content(schema = @Schema(implementation = PaymentResponse.class))),
+        @ApiResponse(responseCode = "400", description = "Parâmetros inválidos ou Idempotency-Key ausente",
+            content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "409", description = "Requisição idêntica já está em processamento concorrente",
+            content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "422", description = "Idempotency-Key reutilizada com payload divergente",
+            content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class)))
+    })
     public ResponseEntity<PaymentResponse> create(
+        @Parameter(description = "Chave de idempotência única por requisição", required = true)
         @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 100) String idempotencyKey,
         @Valid @RequestBody CreatePaymentRequest request
     ) {
         Money amount = Money.of(request.amount(), request.currency());
-        var result = createPayment.execute(
-            idempotencyKey, request.payerId(), request.payeeId(), amount);
+        var result = createPayment.execute(idempotencyKey, request.payerId(), request.payeeId(), amount);
+        Payment payment = result.payment();
 
-        var body = PaymentResponse.fromDomain(result.payment());
-        HttpStatus status = switch (result) {
-            case CreatePaymentUseCase.Result.Created ignored -> HttpStatus.CREATED;
-            case CreatePaymentUseCase.Result.Replayed ignored -> HttpStatus.OK;
-        };
-        return ResponseEntity.status(status)
-            .location(URI.create("/payments/" + result.payment().id()))
-            .body(body);
+        var body = PaymentResponse.fromDomain(payment);
+        String etag = toETag(payment.version());
+
+        var responseBuilder = ResponseEntity.status(HttpStatus.CREATED)
+            .location(URI.create("/v1/payments/" + payment.id()))
+            .eTag(etag);
+
+        if (result instanceof CreatePaymentUseCase.Result.Replayed) {
+            responseBuilder.header("Idempotent-Replayed", "true");
+        }
+
+        return responseBuilder.body(body);
     }
 
-    @GetMapping("/{id}")
-    public PaymentResponse get(@PathVariable UUID id) {
-        return PaymentResponse.fromDomain(getPayment.byId(id));
+    @GetMapping(value = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Consultar pagamento por ID")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Pagamento localizado",
+            headers = @Header(name = "ETag", description = "Versão atual do recurso", schema = @Schema(type = "string")),
+            content = @Content(schema = @Schema(implementation = PaymentResponse.class))),
+        @ApiResponse(responseCode = "404", description = "Pagamento não encontrado",
+            content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class)))
+    })
+    public ResponseEntity<PaymentResponse> get(@PathVariable UUID id) {
+        Payment payment = getPayment.byId(id);
+        return ResponseEntity.ok()
+            .eTag(toETag(payment.version()))
+            .body(PaymentResponse.fromDomain(payment));
     }
 
-    @PatchMapping("/{id}/{transition}")
-    public PaymentResponse transition(
+    @PostMapping(value = "/{id}/authorize", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Autorizar pagamento")
+    public ResponseEntity<PaymentResponse> authorize(
         @PathVariable UUID id,
-        @PathVariable String transition,
-        @RequestBody(required = false) TransitionRequest body
+        @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch
     ) {
-        TransitionPaymentUseCase.Transition op;
-        try {
-            op = TransitionPaymentUseCase.Transition.valueOf(transition.toUpperCase());
-        } catch (IllegalArgumentException ex) {
-            throw new IllegalArgumentException(
-                "unknown transition: " + transition + " (allowed: authorize, capture, settle, fail, cancel)");
-        }
-        String reason = body != null ? body.reason() : null;
-        Payment updated = transitionPayment.execute(id, op, reason);
-        return PaymentResponse.fromDomain(updated);
+        return handleTransition(id, TransitionPaymentUseCase.Transition.AUTHORIZE, null, ifMatch);
     }
 
-    public record CreatePaymentRequest(
-        @NotNull UUID payerId,
-        @NotNull UUID payeeId,
-        @NotNull @Positive String amount,
-        @NotBlank @Size(min = 3, max = 3) String currency
-    ) {}
-
-    public record TransitionRequest(
-        @Size(max = 500) String reason
-    ) {}
-
-    public record PaymentResponse(
-        UUID id,
-        String idempotencyKey,
-        UUID payerId,
-        UUID payeeId,
-        String amount,
-        String currency,
-        String status,
-        String failureReason,
-        String createdAt,
-        String updatedAt
+    @PostMapping(value = "/{id}/capture", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Capturar pagamento previamente autorizado")
+    public ResponseEntity<PaymentResponse> capture(
+        @PathVariable UUID id,
+        @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch
     ) {
-        static PaymentResponse fromDomain(Payment p) {
-            return new PaymentResponse(
-                p.id(),
-                p.idempotencyKey(),
-                p.payerId(),
-                p.payeeId(),
-                p.amount().amount().toPlainString(),
-                p.amount().currency().getCurrencyCode(),
-                p.status().name(),
-                p.failureReason(),
-                p.createdAt().toString(),
-                p.updatedAt().toString()
-            );
+        return handleTransition(id, TransitionPaymentUseCase.Transition.CAPTURE, null, ifMatch);
+    }
+
+    @PostMapping(value = "/{id}/settle", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Liquidar pagamento capturado (Operação Administrativa/PSP)")
+    public ResponseEntity<PaymentResponse> settle(
+        @PathVariable UUID id,
+        @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch
+    ) {
+        return handleTransition(id, TransitionPaymentUseCase.Transition.SETTLE, null, ifMatch);
+    }
+
+    @PostMapping(value = "/{id}/fail", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Marcar pagamento como falho com motivo")
+    public ResponseEntity<PaymentResponse> fail(
+        @PathVariable UUID id,
+        @Valid @RequestBody FailPaymentRequest request,
+        @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch
+    ) {
+        return handleTransition(id, TransitionPaymentUseCase.Transition.FAIL, request.reason(), ifMatch);
+    }
+
+    @PostMapping(value = "/{id}/cancel", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Cancelar pagamento pendente")
+    public ResponseEntity<PaymentResponse> cancel(
+        @PathVariable UUID id,
+        @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch
+    ) {
+        return handleTransition(id, TransitionPaymentUseCase.Transition.CANCEL, null, ifMatch);
+    }
+
+    private ResponseEntity<PaymentResponse> handleTransition(
+        UUID id,
+        TransitionPaymentUseCase.Transition transition,
+        String reason,
+        String ifMatch
+    ) {
+        if (ifMatch != null && !ifMatch.isBlank()) {
+            Payment current = getPayment.byId(id);
+            String currentETag = toETag(current.version());
+            String expected = sanitizeETag(ifMatch);
+            if (!sanitizeETag(currentETag).equals(expected)) {
+                throw new PreconditionFailedException(ifMatch, currentETag);
+            }
         }
+
+        Payment updated = transitionPayment.execute(id, transition, reason);
+        return ResponseEntity.ok()
+            .eTag(toETag(updated.version()))
+            .body(PaymentResponse.fromDomain(updated));
+    }
+
+    private String toETag(Long version) {
+        return "\"v" + (version != null ? version : 0L) + "\"";
+    }
+
+    private String sanitizeETag(String etag) {
+        if (etag == null) return "";
+        return etag.trim().replace("\"", "").replace("W/", "");
     }
 }

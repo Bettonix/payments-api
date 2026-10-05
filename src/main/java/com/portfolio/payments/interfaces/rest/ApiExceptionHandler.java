@@ -4,10 +4,16 @@ import com.portfolio.payments.domain.IdempotencyKeyConflictException;
 import com.portfolio.payments.domain.IdempotencyPayloadMismatchException;
 import com.portfolio.payments.domain.InvalidPaymentTransitionException;
 import com.portfolio.payments.domain.PaymentNotFoundException;
+import com.portfolio.payments.domain.PreconditionFailedException;
 import jakarta.persistence.OptimisticLockException;
+import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
@@ -18,16 +24,14 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
+import java.net.URI;
 import java.time.Instant;
-import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.UUID;
 
 /**
- * Mapeia exceptions do domínio em respostas HTTP semânticas.
- *
- * <p>C7 Fix: Trata ObjectOptimisticLockingFailureException retornando HTTP 409 Conflict.
- * C8 Fix: Trata IdempotencyPayloadMismatchException retornando HTTP 422 Unprocessable Entity.</p>
+ * Mapeia exceções em respostas RFC 9457 (ProblemDetail com Content-Type application/problem+json).
  */
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -35,101 +39,199 @@ public class ApiExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
     @ExceptionHandler(PaymentNotFoundException.class)
-    public ResponseEntity<Map<String, Object>> handleNotFound(PaymentNotFoundException ex) {
+    public ResponseEntity<ProblemDetail> handleNotFound(PaymentNotFoundException ex, HttpServletRequest request) {
         log.debug("payment not found: {}", ex.getMessage());
-        return error(HttpStatus.NOT_FOUND, "payment_not_found", ex.getMessage());
+        ProblemDetail problem = buildProblem(
+            HttpStatus.NOT_FOUND,
+            "urn:problem-type:payment-not-found",
+            "Payment Not Found",
+            ex.getMessage(),
+            request
+        );
+        return response(problem, HttpStatus.NOT_FOUND);
     }
 
     @ExceptionHandler(IdempotencyKeyConflictException.class)
-    public ResponseEntity<Map<String, Object>> handleIdempotencyConflict(IdempotencyKeyConflictException ex) {
+    public ResponseEntity<ProblemDetail> handleIdempotencyConflict(IdempotencyKeyConflictException ex, HttpServletRequest request) {
         log.info("idempotency conflict: key={}", ex.idempotencyKey());
-        Map<String, Object> body = baseBody(HttpStatus.CONFLICT, "idempotency_conflict", ex.getMessage());
-        body.put("idempotencyKey", ex.idempotencyKey());
-        body.put("hint", "retry with exponential backoff, then GET /payments/{id} to resolve state");
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+        ProblemDetail problem = buildProblem(
+            HttpStatus.CONFLICT,
+            "urn:problem-type:idempotency-request-in-progress",
+            "Idempotency Request In Progress",
+            ex.getMessage(),
+            request
+        );
+        problem.setProperty("idempotencyKey", ex.idempotencyKey());
+        problem.setProperty("hint", "A request with this Idempotency-Key is currently in progress or recently executed. Retry shortly.");
+
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+            .header(HttpHeaders.RETRY_AFTER, "1")
+            .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+            .body(problem);
     }
 
     @ExceptionHandler(IdempotencyPayloadMismatchException.class)
-    public ResponseEntity<Map<String, Object>> handlePayloadMismatch(IdempotencyPayloadMismatchException ex) {
+    public ResponseEntity<ProblemDetail> handlePayloadMismatch(IdempotencyPayloadMismatchException ex, HttpServletRequest request) {
         log.warn("idempotency payload mismatch: {}", ex.getMessage());
-        Map<String, Object> body = baseBody(HttpStatus.UNPROCESSABLE_ENTITY, "idempotency_key_reused", ex.getMessage());
-        body.put("idempotencyKey", ex.idempotencyKey());
-        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body);
+        ProblemDetail problem = buildProblem(
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            "urn:problem-type:idempotency-key-reused",
+            "Idempotency Key Reused",
+            ex.getMessage(),
+            request
+        );
+        problem.setProperty("idempotencyKey", ex.idempotencyKey());
+        return response(problem, HttpStatus.UNPROCESSABLE_ENTITY);
     }
 
     @ExceptionHandler(InvalidPaymentTransitionException.class)
-    public ResponseEntity<Map<String, Object>> handleInvalidTransition(InvalidPaymentTransitionException ex) {
+    public ResponseEntity<ProblemDetail> handleInvalidTransition(InvalidPaymentTransitionException ex, HttpServletRequest request) {
         log.debug("invalid payment transition: {}", ex.getMessage());
-        Map<String, Object> body = baseBody(HttpStatus.CONFLICT, "invalid_transition", ex.getMessage());
-        body.put("paymentId", ex.paymentId());
-        body.put("from", ex.from().name());
-        body.put("to", ex.to().name());
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+        ProblemDetail problem = buildProblem(
+            HttpStatus.CONFLICT,
+            "urn:problem-type:invalid-state-transition",
+            "Invalid State Transition",
+            ex.getMessage(),
+            request
+        );
+        problem.setProperty("paymentId", ex.paymentId());
+        problem.setProperty("from", ex.from().name());
+        problem.setProperty("to", ex.to().name());
+        return response(problem, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(PreconditionFailedException.class)
+    public ResponseEntity<ProblemDetail> handlePreconditionFailed(PreconditionFailedException ex, HttpServletRequest request) {
+        log.debug("precondition failed: {}", ex.getMessage());
+        ProblemDetail problem = buildProblem(
+            HttpStatus.PRECONDITION_FAILED,
+            "urn:problem-type:precondition-failed",
+            "Precondition Failed",
+            ex.getMessage(),
+            request
+        );
+        problem.setProperty("expectedETag", ex.expectedETag());
+        problem.setProperty("currentETag", ex.currentETag());
+        return response(problem, HttpStatus.PRECONDITION_FAILED);
     }
 
     @ExceptionHandler({ObjectOptimisticLockingFailureException.class, OptimisticLockException.class})
-    public ResponseEntity<Map<String, Object>> handleOptimisticLock(Exception ex) {
-        log.warn("optimistic lock failure during concurrent modification: {}", ex.getMessage());
-        Map<String, Object> body = baseBody(HttpStatus.CONFLICT, "concurrent_modification",
-            "The resource was modified concurrently by another transaction. Please retry.");
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    public ResponseEntity<ProblemDetail> handleOptimisticLock(Exception ex, HttpServletRequest request) {
+        log.warn("optimistic lock failure: {}", ex.getMessage());
+        ProblemDetail problem = buildProblem(
+            HttpStatus.CONFLICT,
+            "urn:problem-type:concurrent-modification",
+            "Concurrent Modification",
+            "The resource was modified concurrently by another request. Please reload and retry.",
+            request
+        );
+        return response(problem, HttpStatus.CONFLICT);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<Map<String, Object>> handleValidation(MethodArgumentNotValidException ex) {
-        String message = ex.getBindingResult().getFieldErrors().stream()
-            .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
-            .collect(Collectors.joining("; "));
-        return error(HttpStatus.BAD_REQUEST, "validation_failed", message);
+    public ResponseEntity<ProblemDetail> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
+        List<Map<String, String>> fieldErrors = ex.getBindingResult().getFieldErrors().stream()
+            .map(fe -> Map.of(
+                "field", fe.getField(),
+                "message", fe.getDefaultMessage() != null ? fe.getDefaultMessage() : "invalid"
+            ))
+            .toList();
+
+        ProblemDetail problem = buildProblem(
+            HttpStatus.BAD_REQUEST,
+            "urn:problem-type:validation-error",
+            "Validation Failed",
+            "One or more request parameters failed validation.",
+            request
+        );
+        problem.setProperty("errors", fieldErrors);
+        return response(problem, HttpStatus.BAD_REQUEST);
     }
 
     @ExceptionHandler(HandlerMethodValidationException.class)
-    public ResponseEntity<Map<String, Object>> handleHandlerMethodValidation(HandlerMethodValidationException ex) {
-        String message = ex.getAllValidationResults().stream()
+    public ResponseEntity<ProblemDetail> handleHandlerMethodValidation(HandlerMethodValidationException ex, HttpServletRequest request) {
+        List<String> errors = ex.getAllValidationResults().stream()
             .flatMap(vr -> vr.getResolvableErrors().stream())
-            .map(err -> err.getDefaultMessage())
-            .collect(Collectors.joining("; "));
-        return error(HttpStatus.BAD_REQUEST, "validation_failed", message);
+            .map(err -> err.getDefaultMessage() != null ? err.getDefaultMessage() : "invalid")
+            .toList();
+
+        ProblemDetail problem = buildProblem(
+            HttpStatus.BAD_REQUEST,
+            "urn:problem-type:validation-error",
+            "Validation Failed",
+            "Request parameters failed validation: " + String.join("; ", errors),
+            request
+        );
+        problem.setProperty("errors", errors);
+        return response(problem, HttpStatus.BAD_REQUEST);
     }
 
     @ExceptionHandler(MissingRequestHeaderException.class)
-    public ResponseEntity<Map<String, Object>> handleMissingHeader(MissingRequestHeaderException ex) {
-        return error(HttpStatus.BAD_REQUEST, "missing_header",
-            "required header '" + ex.getHeaderName() + "' is missing");
+    public ResponseEntity<ProblemDetail> handleMissingHeader(MissingRequestHeaderException ex, HttpServletRequest request) {
+        String type = "Idempotency-Key".equalsIgnoreCase(ex.getHeaderName())
+            ? "urn:problem-type:idempotency-key-missing"
+            : "urn:problem-type:missing-header";
+
+        ProblemDetail problem = buildProblem(
+            HttpStatus.BAD_REQUEST,
+            type,
+            "Missing Required Header",
+            "Required header '" + ex.getHeaderName() + "' is missing",
+            request
+        );
+        return response(problem, HttpStatus.BAD_REQUEST);
     }
 
-    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-    public ResponseEntity<Map<String, Object>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
-        return error(HttpStatus.BAD_REQUEST, "invalid_argument",
-            "parameter '" + ex.getName() + "' has invalid value");
-    }
-
-    @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ResponseEntity<Map<String, Object>> handleNotReadable(HttpMessageNotReadableException ex) {
-        return error(HttpStatus.BAD_REQUEST, "malformed_body", "request body is malformed or missing");
-    }
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
-        return error(HttpStatus.BAD_REQUEST, "invalid_argument", ex.getMessage());
+    @ExceptionHandler({
+        MethodArgumentTypeMismatchException.class,
+        HttpMessageNotReadableException.class,
+        IllegalArgumentException.class
+    })
+    public ResponseEntity<ProblemDetail> handleBadRequest(Exception ex, HttpServletRequest request) {
+        ProblemDetail problem = buildProblem(
+            HttpStatus.BAD_REQUEST,
+            "urn:problem-type:bad-request",
+            "Bad Request",
+            ex.getMessage() != null ? ex.getMessage() : "Malformed request",
+            request
+        );
+        return response(problem, HttpStatus.BAD_REQUEST);
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<Map<String, Object>> handleAny(Exception ex) {
-        log.error("unhandled exception", ex);
-        return error(HttpStatus.INTERNAL_SERVER_ERROR, "internal_error", "an unexpected error occurred");
+    public ResponseEntity<ProblemDetail> handleAny(Exception ex, HttpServletRequest request) {
+        log.error("unhandled server exception", ex);
+        ProblemDetail problem = buildProblem(
+            HttpStatus.INTERNAL_SERVER_ERROR,
+            "urn:problem-type:internal-error",
+            "Internal Server Error",
+            "An unexpected error occurred. Please contact support with the traceId.",
+            request
+        );
+        return response(problem, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
-    private ResponseEntity<Map<String, Object>> error(HttpStatus status, String code, String message) {
-        return ResponseEntity.status(status).body(baseBody(status, code, message));
+    private ProblemDetail buildProblem(HttpStatus status, String type, String title, String detail, HttpServletRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
+        problem.setType(URI.create(type));
+        problem.setTitle(title);
+        if (request != null) {
+            problem.setInstance(URI.create(request.getRequestURI()));
+        }
+
+        String traceId = MDC.get("traceId");
+        if (traceId == null || traceId.isBlank()) {
+            traceId = UUID.randomUUID().toString();
+        }
+        problem.setProperty("traceId", traceId);
+        problem.setProperty("timestamp", Instant.now().toString());
+
+        return problem;
     }
 
-    private Map<String, Object> baseBody(HttpStatus status, String code, String message) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("timestamp", Instant.now().toString());
-        body.put("status", status.value());
-        body.put("error", code);
-        body.put("message", message);
-        return body;
+    private ResponseEntity<ProblemDetail> response(ProblemDetail problem, HttpStatus status) {
+        return ResponseEntity.status(status)
+            .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+            .body(problem);
     }
 }

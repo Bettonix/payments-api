@@ -1,0 +1,125 @@
+### =========================================================================
+### Payments API - Coleção de Testes HTTP (IntelliJ / VS Code REST Client)
+### =========================================================================
+
+@host = http://localhost:8181
+@keycloak = http://localhost:8080/realms/payments/protocol/openid-connect/token
+@payerId = 11111111-1111-1111-1111-111111111111
+@payeeId = 22222222-2222-2222-2222-222222222222
+@idemKey = idem-test-{{$random.uuid}}
+
+### 1. Obter Token JWT via Keycloak (Merchant Acme)
+# @name getTokenAcme
+POST {{keycloak}}
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id=merchant-acme&client_secret=acme-secret&scope=payments:read%20payments:write
+
+> {%
+    client.global.set("token", response.body.access_token);
+%}
+
+### 2. Criar Pagamento Novo (201 Created + ETag)
+# @name createPayment
+POST {{host}}/v1/payments
+Authorization: Bearer {{token}}
+Idempotency-Key: {{idemKey}}
+Content-Type: application/json
+
+{
+  "payerId": "{{payerId}}",
+  "payeeId": "{{payeeId}}",
+  "amount": 250.00,
+  "currency": "BRL"
+}
+
+> {%
+    client.test("Status code is 201", function() {
+        client.assert(response.status === 201, "Expected 201 Created");
+    });
+    client.global.set("paymentId", response.body.id);
+    client.global.set("paymentETag", response.headers.valueOf("ETag"));
+%}
+
+### 3. Replay Idempotente (Mesma Chave e Mesmo Payload -> 201 + Idempotent-Replayed: true)
+POST {{host}}/v1/payments
+Authorization: Bearer {{token}}
+Idempotency-Key: {{idemKey}}
+Content-Type: application/json
+
+{
+  "payerId": "{{payerId}}",
+  "payeeId": "{{payeeId}}",
+  "amount": 250.00,
+  "currency": "BRL"
+}
+
+> {%
+    client.test("Status code is 201 with Idempotent-Replayed header", function() {
+        client.assert(response.status === 201, "Expected 201 Created on replay");
+        client.assert(response.headers.valueOf("Idempotent-Replayed") === "true", "Expected Idempotent-Replayed header");
+    });
+%}
+
+### 4. Conflito de Idempotência: Reuso de Chave com Payload Diferente (422 Unprocessable Entity)
+POST {{host}}/v1/payments
+Authorization: Bearer {{token}}
+Idempotency-Key: {{idemKey}}
+Content-Type: application/json
+
+{
+  "payerId": "{{payerId}}",
+  "payeeId": "{{payeeId}}",
+  "amount": 999.00,
+  "currency": "BRL"
+}
+
+> {%
+    client.test("Status code is 422 Unprocessable Entity", function() {
+        client.assert(response.status === 422, "Expected 422 due to payload mismatch (C8)");
+    });
+%}
+
+### 5. Consultar Pagamento por ID (GET com ETag)
+GET {{host}}/v1/payments/{{paymentId}}
+Authorization: Bearer {{token}}
+
+### 6. Autorizar Pagamento (POST com If-Match)
+POST {{host}}/v1/payments/{{paymentId}}/authorize
+Authorization: Bearer {{token}}
+If-Match: {{paymentETag}}
+
+### 7. Testar Concorrência/Precondition Failed com ETag Obsoleto (412 Precondition Failed)
+POST {{host}}/v1/payments/{{paymentId}}/capture
+Authorization: Bearer {{token}}
+If-Match: "v999"
+
+> {%
+    client.test("Status code is 412 Precondition Failed", function() {
+        client.assert(response.status === 412, "Expected 412 on mismatched ETag");
+    });
+%}
+
+### 8. Capturar Pagamento
+POST {{host}}/v1/payments/{{paymentId}}/capture
+Authorization: Bearer {{token}}
+
+### 9. Obter Token Admin/Ops para Liquidação
+POST {{keycloak}}
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id=payments-ops&client_secret=ops-secret&scope=payments:admin
+
+> {%
+    client.global.set("adminToken", response.body.access_token);
+%}
+
+### 10. Liquidar Pagamento (Operação Admin - POST /settle)
+POST {{host}}/v1/payments/{{paymentId}}/settle
+Authorization: Bearer {{adminToken}}
+
+### 11. Swagger UI & OpenAPI Docs
+GET {{host}}/swagger-ui.html
+
+### 12. OpenAPI JSON Spec
+GET {{host}}/v3/api-docs
