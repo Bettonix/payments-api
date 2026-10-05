@@ -3,8 +3,10 @@ package com.portfolio.payments.interfaces.rest;
 import com.portfolio.payments.application.CreatePaymentUseCase;
 import com.portfolio.payments.application.GetPaymentUseCase;
 import com.portfolio.payments.application.TransitionPaymentUseCase;
+import com.portfolio.payments.application.port.CurrentMerchant;
 import com.portfolio.payments.domain.Money;
 import com.portfolio.payments.domain.Payment;
+import com.portfolio.payments.domain.PaymentNotFoundException;
 import com.portfolio.payments.domain.PreconditionFailedException;
 import com.portfolio.payments.interfaces.rest.dto.CreatePaymentRequest;
 import com.portfolio.payments.interfaces.rest.dto.FailPaymentRequest;
@@ -20,6 +22,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -37,7 +40,7 @@ import java.net.URI;
 import java.util.UUID;
 
 /**
- * API REST v1 de pagamentos seguindo padrão de mercado (estilo Stripe).
+ * API REST v1 de pagamentos com autenticação OAuth2 e isolamento multi-tenant (merchant_id).
  */
 @RestController
 @RequestMapping({"/v1/payments", "/payments"})
@@ -47,13 +50,23 @@ public class PaymentController {
     private final CreatePaymentUseCase createPayment;
     private final GetPaymentUseCase getPayment;
     private final TransitionPaymentUseCase transitionPayment;
+    private final CurrentMerchant currentMerchant;
+
+    @Autowired
+    public PaymentController(CreatePaymentUseCase createPayment,
+                             GetPaymentUseCase getPayment,
+                             TransitionPaymentUseCase transitionPayment,
+                             CurrentMerchant currentMerchant) {
+        this.createPayment = createPayment;
+        this.getPayment = getPayment;
+        this.transitionPayment = transitionPayment;
+        this.currentMerchant = currentMerchant;
+    }
 
     public PaymentController(CreatePaymentUseCase createPayment,
                              GetPaymentUseCase getPayment,
                              TransitionPaymentUseCase transitionPayment) {
-        this.createPayment = createPayment;
-        this.getPayment = getPayment;
-        this.transitionPayment = transitionPayment;
+        this(createPayment, getPayment, transitionPayment, () -> Payment.DEFAULT_MERCHANT_ID);
     }
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
@@ -68,6 +81,10 @@ public class PaymentController {
             content = @Content(schema = @Schema(implementation = PaymentResponse.class))),
         @ApiResponse(responseCode = "400", description = "Parâmetros inválidos ou Idempotency-Key ausente",
             content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "401", description = "Token JWT não fornecido ou inválido",
+            content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "403", description = "Escopo insuficiente (exige payments:write)",
+            content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class))),
         @ApiResponse(responseCode = "409", description = "Requisição idêntica já está em processamento concorrente",
             content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class))),
         @ApiResponse(responseCode = "422", description = "Idempotency-Key reutilizada com payload divergente",
@@ -78,8 +95,9 @@ public class PaymentController {
         @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 100) String idempotencyKey,
         @Valid @RequestBody CreatePaymentRequest request
     ) {
+        String merchantId = currentMerchant.getMerchantId();
         Money amount = Money.of(request.amount(), request.currency());
-        var result = createPayment.execute(idempotencyKey, request.payerId(), request.payeeId(), amount);
+        var result = createPayment.execute(merchantId, idempotencyKey, request.payerId(), request.payeeId(), amount);
         Payment payment = result.payment();
 
         var body = PaymentResponse.fromDomain(payment);
@@ -102,11 +120,17 @@ public class PaymentController {
         @ApiResponse(responseCode = "200", description = "Pagamento localizado",
             headers = @Header(name = "ETag", description = "Versão atual do recurso", schema = @Schema(type = "string")),
             content = @Content(schema = @Schema(implementation = PaymentResponse.class))),
-        @ApiResponse(responseCode = "404", description = "Pagamento não encontrado",
+        @ApiResponse(responseCode = "401", description = "Não autenticado",
+            content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "403", description = "Escopo insuficiente (exige payments:read)",
+            content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "404", description = "Pagamento não encontrado ou pertencente a outro lojista",
             content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class)))
     })
     public ResponseEntity<PaymentResponse> get(@PathVariable UUID id) {
         Payment payment = getPayment.byId(id);
+        assertMerchantOwnership(payment);
+
         return ResponseEntity.ok()
             .eTag(toETag(payment.version()))
             .body(PaymentResponse.fromDomain(payment));
@@ -164,8 +188,10 @@ public class PaymentController {
         String reason,
         String ifMatch
     ) {
+        Payment current = getPayment.byId(id);
+        assertMerchantOwnership(current);
+
         if (ifMatch != null && !ifMatch.isBlank()) {
-            Payment current = getPayment.byId(id);
             String currentETag = toETag(current.version());
             String expected = sanitizeETag(ifMatch);
             if (!sanitizeETag(currentETag).equals(expected)) {
@@ -177,6 +203,18 @@ public class PaymentController {
         return ResponseEntity.ok()
             .eTag(toETag(updated.version()))
             .body(PaymentResponse.fromDomain(updated));
+    }
+
+    private void assertMerchantOwnership(Payment payment) {
+        String merchantId = currentMerchant.getMerchantId();
+        // Em operações de admin (payments-ops), permite acesso global
+        if ("payments-ops".equals(merchantId)) {
+            return;
+        }
+        if (payment.merchantId() != null && !payment.merchantId().equals(merchantId) && !"legacy".equals(payment.merchantId())) {
+            // OWASP API1: BOLA prevention - retorna 404 em vez de 403 para não vazar a existência do ID
+            throw new PaymentNotFoundException(payment.id());
+        }
     }
 
     private String toETag(Long version) {

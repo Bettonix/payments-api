@@ -1,9 +1,29 @@
 # Profile default — usado quando nenhum profile ativo.
-# Configurações comuns compartilhadas por dev/test/prod.
+# Configurações comuns compartilhadas por local/test/prod.
 
 spring:
   application:
     name: payments-api
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:127.0.0.1}:${POSTGRES_PORT:5432}/${POSTGRES_DB:payments}
+    username: ${POSTGRES_USER:payments}
+    password: ${POSTGRES_PASSWORD:payments}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      pool-name: payments-pool
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER:http://localhost:8080/realms/payments}
+          jwk-set-uri: ${OIDC_JWK_SET_URI:http://localhost:8080/realms/payments/protocol/openid-connect/certs}
   jpa:
     open-in-view: false
     hibernate:
