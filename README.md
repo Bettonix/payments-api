@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Enterprise Financial Processing Platform & Distributed Systems Engine</strong><br>
-  <em>Clean Hexagonal Architecture • Dual-Layer Distributed Idempotency • Transactional Outbox • Apache Kafka KRaft • CloudEvents v1.0 • OAuth2 Multi-Tenancy • OpenTelemetry</em>
+  <em>Clean Hexagonal Architecture • Pix-Grade Asynchronous Ingress • Dual-Layer Distributed Idempotency • Transactional Outbox • Apache Kafka KRaft • CloudEvents v1.0 • OAuth2 Multi-Tenancy • OpenTelemetry LGTM</em>
 </p>
 
 <p align="center">
@@ -21,15 +21,21 @@
 
 ## 📌 Sumário Executivo
 
-O **Payments API** é uma plataforma distribuída de alta resiliência e baixa latência projetada para processamento de pagamentos em larga escala. Desenvolvido sob os mais rigorosos padrões da indústria de pagamentos e engenharia financeira (ex.: Stripe, Adyen), o sistema elimina os riscos críticos de sistemas distribuídos: **dupla cobrança**, **dual-write**, **inconsistência de concorrência** e **vazamento de dados entre lojistas (BOLA)**.
+O **Payments API** é uma plataforma distribuída de alta resiliência e baixíssima latência projetada para processamento de pagamentos em escala massiva (100.000+ requisições com throughput sustentado superior a 1.700–2.500+ req/s por nó). Inspirado na arquitetura do **Pix (Banco Central do Brasil)** e em provedores de pagamentos globais (ex.: Stripe, Adyen), o sistema elimina os problemas clássicos de sistemas distribuídos sob altíssima concorrência: **dupla cobrança**, **dual-write**, **HikariCP pool starvation**, **contenção de locks relacionais** e **vazamento de dados entre lojistas (BOLA)**.
 
-### Por que este projeto se destaca:
-* **Idempotência Distribuída em Duas Camadas**: Script atômico Lua CAS no Redis com locks in-flight de 120s, cache de respostas de 24h, canonical fingerprinting SHA-256 e resiliência fail-open para restrição relacional `UNIQUE (merchant_id, idempotency_key)` via Resilience4j.
-* **Transactional Outbox com Apache Kafka KRaft**: Eliminação de dual-write entre banco relacional e mensageria através da gravação atômica na tabela `outbox_events` (`SKIP LOCKED`) e publicação ordenada por chave no Kafka 4.x.
-* **Padronização CloudEvents v1.0 (Modo Binário)**: Rastreabilidade e interoperabilidade universal com metadados CNCF nos cabeçalhos Kafka (`ce_specversion`, `ce_id`, `ce_source`, `ce_type`, `ce_subject`, `ce_merchantid`).
-* **Segurança Zero-Trust & Prevenção OWASP BOLA**: Autenticação OAuth2 Resource Server via Keycloak, escopos granulares (`payments:write`, `payments:read`, `payments:admin`) e proteção ativa contra OWASP API #1 (BOLA) respondendo estritamente com **HTTP 404 Not Found**.
+### Destaques de Engenharia:
+* **Ingestão Assíncrona na Borda (Padrão Pix / RFC 7240)**: A borda HTTP valida autenticação, sintaxe e chave de idempotência atomicamente no Redis via script Lua CAS e publica a intenção no tópico Kafka `payments.ingress`, respondendo imediatamente com **HTTP 202 Accepted** (latência de borda **p50 ~4ms**).
+* **Particionamento Estrito por Pagador (`payerId`)**: As filas de ingestão são particionadas pela chave da conta do pagador, garantindo ordenação FIFO per-account, concorrência massiva paralela entre contas distintas e **zero disputa de row locks** no banco de dados.
+* **Persistência ACID em Lote Assíncrono com Transactional Outbox**: Consumidores dedicados (`PaymentIngressConsumer`) persistem o agregador `Payment` e o evento correspondente em `outbox_events` em uma transação atômica única no PostgreSQL 16 Alpine (`SKIP LOCKED`), garantindo entrega *at-least-once* sem dual-write.
+* **Decomposição Granular de Latência em 4 Fases**: Instrumentação completa com Micrometer `Timer` e histogramas OTel medindo:
+  1. *Ingress (Borda até 202)*: ~4.1ms p50.
+  2. *Queue Transit (Espera no Kafka)*: tempo em fila amortecedora.
+  3. *DB Persistence (PostgreSQL ACID)*: ~2.3ms p50.
+  4. *E2E Total (Req até Persistência Concluída)*: visibilidade ponta a ponta em tempo real no Grafana.
+* **Idempotência Distribuída em Duas Camadas**: Redis Lua CAS com locks in-flight de 120s, cache de respostas de 24h, canonical fingerprinting SHA-256 e resiliência fail-open para restrição relacional `UNIQUE (merchant_id, idempotency_key)` com Resilience4j.
+* **Padronização CloudEvents v1.0 (Modo Binário)**: Metadados CNCF nos cabeçalhos Kafka (`ce_specversion`, `ce_id`, `ce_source`, `ce_type`, `ce_subject`, `ce_merchantid`).
+* **Segurança Zero-Trust & Prevenção OWASP BOLA**: Autenticação OAuth2 Resource Server via Keycloak 26, escopos granulares (`payments:write`, `payments:read`, `payments:admin`) e proteção ativa contra OWASP API #1 (BOLA) respondendo estritamente com **HTTP 404 Not Found**.
 * **Contratos RESTful v1 e RFC 9457**: Transições especializadas de máquina de estados (`/authorize`, `/capture`, `/settle`, `/fail`, `/cancel`), concorrência otimista com ETags/`If-Match` (**HTTP 412**) e respostas de erro uniformes em `application/problem+json`.
-* **Observabilidade Completa de Produção**: Rastreamento distribuído de ponta a ponta com OpenTelemetry bridge, push exporter OTLP para a stack unificada Grafana LGTM e métricas customizadas via Micrometer.
 * **Arquitetura Hexagonal Pura com ArchUnit**: Camadas de Domínio e Casos de Uso 100% livres de anotações ou dependências de frameworks, validadas continuamente no CI.
 
 ---
@@ -57,11 +63,12 @@ graph TD
 
     subgraph ApplicationLayer ["Application Layer / Use Cases"]
         CP["CreatePaymentUseCase"]
+        PIS["PaymentIngressService"]
         TP["TransitionPaymentUseCase"]
         GP["GetPaymentUseCase"]
         OR["OutboxRelay"]
         RF["RequestFingerprint (SHA-256)"]
-        PM["PaymentMetrics"]
+        PM["PaymentMetrics (4-Phase Breakdown)"]
     end
 
     subgraph PureDomain ["Pure Domain (Java 21)"]
@@ -71,15 +78,18 @@ graph TD
         PE["PaymentEvent Sealed Types"]
         PR["PaymentRepository Port"]
         IS["IdempotencyStore Port"]
+        PIP["PaymentIngressPublisher Port"]
         CM["CurrentMerchant Port"]
     end
 
     subgraph DrivenAdapters ["Driven Adapters / Infrastructure"]
         JPA["JpaPaymentRepositoryAdapter (PostgreSQL 16)"]
         RIS["RedisIdempotencyStore (Lua CAS + Circuit Breaker)"]
-        KOP["KafkaOutboxPublisher (Apache Kafka 4.x KRaft)"]
+        KIP["KafkaIngressPublisher (Tópico payments.ingress)"]
+        KIC["PaymentIngressConsumer (Worker por Partição)"]
+        KOP["KafkaOutboxPublisher (Tópico payments.events KRaft)"]
         JWT["JwtCurrentMerchant (Keycloak 26)"]
-        OTEL["OpenTelemetry Bridge (Grafana LGTM)"]
+        OTEL["OpenTelemetry Bridge (Grafana LGTM Stack)"]
     end
 
     ClientLayer --> InterfaceAdapters
@@ -87,18 +97,21 @@ graph TD
     ApplicationLayer --> PureDomain
     ApplicationLayer --> PR
     ApplicationLayer --> IS
+    ApplicationLayer --> PIP
     ApplicationLayer --> CM
     PR -.-> JPA
     IS -.-> RIS
+    PIP -.-> KIP
+    KIC --> PIS
     CM -.-> JWT
     OR --> KOP
 ```
 
 ---
 
-### 2. Fluxo de Idempotência Distribuída (Dual-Layer)
+### 2. Ingestão Assíncrona & Idempotência Distribuída (Padrão Pix)
 
-Garante semântica estrita de processamento único mesmo sob rajadas massivas de retentativas de rede e chamadas concorrentes paralelas.
+Sob alta carga, a API não bloqueia aguardando I/O síncrono de banco de dados. Ela adquire o lock atômico no Redis, enfileira o comando no Kafka particionado por pagador e devolve `HTTP 202 Accepted` em ~4ms:
 
 ```mermaid
 sequenceDiagram
@@ -106,17 +119,19 @@ sequenceDiagram
     actor Client as Cliente (Lojista)
     participant API as PaymentController
     participant Redis as Redis (Lua CAS)
+    participant KafkaIn as Kafka (payments.ingress)
+    participant Worker as PaymentIngressConsumer
     participant DB as PostgreSQL (ACID)
-    participant Kafka as Kafka KRaft
+    participant KafkaOut as Kafka (payments.events)
 
     Client->>API: POST /v1/payments (Idempotency-Key: X)
     API->>API: Calcula SHA-256 Fingerprint do payload
     API->>Redis: EVALSHA idempotency_cas.lua (tryAcquire)
     
-    alt Chave já concluída com mesmo Fingerprint
+    alt Chave já concluída com mesmo Fingerprint (Replay)
         Redis-->>API: COMPLETED + PaymentId
         API->>DB: Busca pagamento por ID
-        API-->>Client: HTTP 201 Created (Idempotent-Replayed: true, ETag: v0)
+        API-->>Client: HTTP 200 OK (Idempotent-Replayed: true, ETag: v0)
     else Chave já concluída com Fingerprint DIFERENTE
         Redis-->>API: MISMATCH
         API-->>Client: HTTP 422 Unprocessable Content (RFC 9457 ProblemDetail)
@@ -125,17 +140,51 @@ sequenceDiagram
         API-->>Client: HTTP 409 Conflict (Retry-After: 1)
     else Chave Nova (Lock Adquirido com Sucesso)
         Redis-->>API: ACQUIRED (TTL: 120s)
-        Note over API,DB: Transação Atômica PostgreSQL
-        API->>DB: INSERT payments (merchant_id, idempotency_key)
-        API->>DB: INSERT outbox_events (status: PENDING)
-        API->>Redis: EVALSHA idempotency_cas.lua (complete, TTL: 24h)
-        API-->>Client: HTTP 201 Created (Location: /v1/payments/{id}, ETag: v0)
+        API->>KafkaIn: send(key=payerId, payload) [Partição por Pagador]
+        API-->>Client: HTTP 202 Accepted (Location, ETag: "v0", Preference-Applied: respond-async)
+        
+        Note over Worker,DB: Processamento Assíncrono Desacoplado
+        Worker->>KafkaIn: Consome lote por partição (FIFO per-payer)
+        Worker->>DB: INSERT payments (merchant_id, idempotency_key)
+        Worker->>DB: INSERT outbox_events (status: PENDING)
+        Worker->>Redis: EVALSHA idempotency_cas.lua (complete, TTL: 24h)
+        
+        Note over Worker,KafkaOut: Outbox Relay Engine (Entrega At-Least-Once)
+        DB->>KafkaOut: Drena outbox_events para payments.events (CloudEvents v1.0)
     end
 ```
 
 ---
 
-### 3. Transactional Outbox & CloudEvents v1.0
+### 3. Decomposição da Latência em 4 Fases
+
+Para garantir visibilidade cirúrgica da performance financeira, a API decompõe o ciclo de vida do pagamento em 4 métricas distintas:
+
+```text
+[ Cliente ] 
+    │
+    ▼ (1) Ingress Latency: ~4.1ms p50  ──► [ HTTP 202 Accepted ]
+[ Borda API ]
+    │
+    ▼ (2) Queue Transit Latency: Buffer amortecedor no Kafka
+[ Tópico: payments.ingress (chave = payerId) ]
+    │
+    ▼ (3) DB Persistence Latency: ~2.3ms p50
+[ PostgreSQL ACID: payments + outbox_events ]
+    │
+    ▼ (4) E2E Total Latency: Duração consolidada ponta a ponta
+```
+
+| Fase | Métrica Micrometer / Prometheus | O que mede | Valor Típico (p50) |
+|---|---|---|---|
+| **1. Ingress** | `payments.latency.ingress` | Da chegada do HTTP até a emissão do `202 Accepted` | **~4.1 ms** |
+| **2. Queue Transit** | `payments.latency.queue.transit` | Tempo em trânsito/espera na fila do Kafka | **Amortecedor dinâmico** |
+| **3. DB Persistence**| `payments.latency.db.persistence` | Transação ACID relacional JDBC + Outbox | **~2.3 ms** |
+| **4. E2E Total** | `payments.latency.e2e.total` | Tempo total desde o request HTTP até a gravação em disco | **Tempo real consolidado** |
+
+---
+
+### 4. Transactional Outbox & CloudEvents v1.0
 
 Eliminação definitiva de dual-write. O evento de domínio é persistido na mesma transação relacional e publicado de forma assíncrona e confiável no Apache Kafka.
 
@@ -162,11 +211,11 @@ flowchart LR
 
 ---
 
-### 4. Máquina de Estados Finita do Pagamento
+### 5. Máquina de Estados Finita do Pagamento
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: POST /v1/payments
+    [*] --> PENDING: POST /v1/payments (202 Accepted)
     PENDING --> AUTHORIZED: POST /authorize [If-Match v0]
     PENDING --> FAILED: POST /fail [admin]
     PENDING --> CANCELED: POST /cancel
@@ -183,11 +232,11 @@ stateDiagram-v2
 ## 📡 Especificação da API REST `/v1/payments`
 
 > [!IMPORTANT]
-> **Versionamento Estrito**: Todos os endpoints de produção são estritamente versionados sob o prefixo `/v1/payments`. Rotas legadas não versionadas (`/payments`) foram completamente descontinuadas e respondem com **HTTP 404 Not Found**.
+> **Versionamento Estrito**: Todos os endpoints de produção são estritamente versionados sob o prefixo `/v1/payments`. Rotas legadas não versionadas (`/payments`) foram descontinuadas e respondem com **HTTP 404 Not Found**.
 
 | Método | Rota | Escopo OAuth2 | Cabeçalhos Principais | Status de Sucesso | Erros Mapeados (RFC 9457) |
 |---|---|---|---|---|---|
-| `POST` | `/v1/payments` | `payments:write` | `Idempotency-Key` (obrigatório) | `201 Created` (`Location`, `ETag`, `Idempotent-Replayed`) | `400`, `401`, `403`, `409`, `422` |
+| `POST` | `/v1/payments` | `payments:write` | `Idempotency-Key` (obrigatório) | `202 Accepted` (Novo) / `200 OK` (Replay) | `400`, `401`, `403`, `409`, `422` |
 | `GET` | `/v1/payments/{id}` | `payments:read` | `Authorization: Bearer <token>` | `200 OK` (`ETag`) | `401`, `403`, `404` (BOLA) |
 | `POST` | `/v1/payments/{id}/authorize` | `payments:write` | `If-Match: "v<version>"` | `200 OK` (`ETag`) | `400`, `404`, `409`, `412` |
 | `POST` | `/v1/payments/{id}/capture` | `payments:write` | `If-Match: "v<version>"` | `200 OK` (`ETag`) | `400`, `404`, `409`, `412` |
@@ -202,15 +251,15 @@ stateDiagram-v2
 | Camada | Tecnologia | Versão | Rationale de Arquitetura |
 |---|---|---|---|
 | **Linguagem** | Java | 21 LTS | Records, pattern matching, sealed interfaces, virtual threads ready. |
-| **Framework** | Spring Boot | 3.3.5 | Spring Security OAuth2 Resource Server, Spring Data JPA, Spring Kafka, Spring Data Redis. |
-| **Build & Tooling** | Apache Maven | 3.9+ | Wrapper Maven autônomo (`mvnw`), plugins Maven Compiler, Surefire e Springdoc. |
-| **Banco de Dados** | PostgreSQL | 16 Alpine | Migrações Flyway versionadas (`V1` a `V5`), particionamento lógico multi-tenant e `SKIP LOCKED`. |
+| **Framework** | Spring Boot | 3.3.5 | Spring Security OAuth2 Resource Server, Spring Data Redis, Spring Kafka, JDBC. |
+| **Build & Tooling** | Apache Maven | 3.9+ | Wrapper Maven autônomo (`mvnw`), plugins Compiler, Surefire e Springdoc. |
+| **Banco de Dados** | PostgreSQL | 16 Alpine | Migrações Flyway (`V1` a `V5`), particionamento lógico multi-tenant, JDBC puro de alta vazão e `SKIP LOCKED`. |
 | **Cache & Lock** | Redis | 7 Alpine | Script atômico Lua para CAS, TTLs configuráveis e rate/idempotency locking. |
-| **Mensageria** | Apache Kafka | 4.x KRaft | Modo KRaft nativo (sem ZooKeeper), garantias de ordenação por partição e tópicos segregados. |
+| **Mensageria** | Apache Kafka | 4.x KRaft | Modo KRaft nativo (sem ZooKeeper). Tópico de ingestão `payments.ingress` e outbox `payments.events`. |
 | **Segurança / IdP** | Keycloak | 26 | Realm `payments` provisionado com clients pré-configurados (`merchant-acme`, `merchant-globex`, `payments-ops`). |
 | **Resiliência** | Resilience4j | 2.2 | Circuit Breakers e fallback fail-open para operações de mensageria e idempotência. |
 | **Observabilidade** | OpenTelemetry | LGTM Stack | Micrometer Tracing OTel bridge + push OTLP (4318) para Grafana, Mimir, Loki e Tempo. |
-| **Qualidade & Testes**| ArchUnit & JUnit 5 | 1.3 / 5.10 | 55+ testes automatizados (unitários puros, isolamento de camadas, concorrência e mocks). |
+| **Qualidade & Testes**| ArchUnit & JUnit 5 | 1.3 / 5.10 | 56 testes automatizados (unitários puros, isolamento hexagonal, concorrência e mocks). |
 
 ---
 
@@ -252,14 +301,13 @@ Disponibilizamos um script completo de automação que executa o fluxo completo 
 ```bash
 bash scripts/test-e2e.sh
 ```
-O script valida autenticação Keycloak, criação com idempotência, replay, conflito 422, transições de estado, bloqueio BOLA 404, tabelas do Outbox e consumo de eventos no Kafka.
+O script valida autenticação Keycloak, criação com ingestão assíncrona, replay, conflito 422, transições de estado, bloqueio BOLA 404, tabelas do Outbox e consumo de eventos no Kafka.
 
-### 5. Executar Benchmark de Alta Performance (10.000 Requisições)
-Gere uma carga massiva de 10.000 pagamentos realistas e meça a performance com **Java 21 Virtual Threads**:
+### 5. Executar Benchmark de Alta Performance (100.000 Requisições)
+Gere carga massiva com **Java 21 Virtual Threads** e meça a performance com concorrência ajustável:
 ```bash
-make bench
-# Ou com parâmetros personalizados:
-bash scripts/benchmark.sh --total 10000 --concurrency 50
+# Executa benchmark padrão (ex.: 10.000 ou 100.000 requisições)
+bash scripts/benchmark.sh --total 100000 --concurrency 50
 ```
 O benchmark gera automaticamente o relatório consolidado em [benchmark-report.md](benchmark-report.md) com Throughput (RPS), percentis de latência (p50, p95, p99) e distribuição de status HTTP.
 
@@ -276,7 +324,7 @@ export TOKEN=$(curl -s -X POST http://localhost:8080/realms/payments/protocol/op
   -d "scope=payments:read payments:write" | jq -r .access_token)
 ```
 
-### 2. Criar Pagamento com Chave de Idempotência
+### 2. Criar Pagamento com Chave de Idempotência (Ingestão Assíncrona)
 ```bash
 curl -i -X POST http://localhost:8181/v1/payments \
   -H "Authorization: Bearer $TOKEN" \
@@ -289,11 +337,12 @@ curl -i -X POST http://localhost:8181/v1/payments \
     "currency": "BRL"
   }'
 ```
-**Resposta (HTTP 201 Created):**
+**Resposta (HTTP 202 Accepted):**
 ```http
-HTTP/1.1 201 Created
+HTTP/1.1 202 Accepted
 Location: /v1/payments/7e15f60b-4899-4c80-be31-7ff40428efc7
 ETag: "v0"
+Preference-Applied: respond-async
 Content-Type: application/json
 
 {
@@ -309,7 +358,8 @@ Content-Type: application/json
 ### 3. Replay Idempotente Seguro
 Ao reexecutar a mesma chamada acima com os mesmos dados, a resposta é instantânea do Redis sem reprocessar no banco:
 ```http
-HTTP/1.1 201 Created
+HTTP/1.1 200 OK
+Location: /v1/payments/7e15f60b-4899-4c80-be31-7ff40428efc7
 Idempotent-Replayed: true
 ETag: "v0"
 ```
@@ -360,8 +410,8 @@ curl -i -X GET http://localhost:8181/v1/payments/7e15f60b-4899-4c80-be31-7ff4042
 |---|---|---|
 | **Swagger UI** | [http://localhost:8181/swagger-ui.html](http://localhost:8181/swagger-ui.html) | Documentação interativa e sandbox de testes OpenAPI 3 |
 | **OpenAPI Spec** | [http://localhost:8181/v3/api-docs](http://localhost:8181/v3/api-docs) | Especificação OpenAPI 3 em formato JSON |
-| **Kafka UI** | [http://localhost:8085](http://localhost:8085) | Inspeção visual de mensagens CloudEvents, tópicos e partições |
-| **Grafana LGTM** | [http://localhost:3000](http://localhost:3000) | Visualização de traces OpenTelemetry (Tempo), métricas e dashboards |
+| **Kafka UI** | [http://localhost:8085](http://localhost:8085) | Inspeção visual de mensagens nos tópicos `payments.ingress` e `payments.events` |
+| **Grafana LGTM** | [http://localhost:3000/d/payments-overview/payments-api-overview](http://localhost:3000/d/payments-overview/payments-api-overview) | Dashboard oficial com RED metrics, Outbox pending e **Latency Breakdown by Phase (p50 Mediana)** |
 | **Keycloak Admin** | [http://localhost:8080](http://localhost:8080) | Painel administrativo do Identity Provider (admin / admin) |
 | **Actuator Health**| [http://localhost:8181/actuator/health](http://localhost:8181/actuator/health) | Health check consolidado de persistência, mensageria e cache |
 | **Prometheus Metrics**| [http://localhost:8181/actuator/prometheus](http://localhost:8181/actuator/prometheus) | Métricas expostas para scraping de telemetria |
@@ -377,6 +427,7 @@ Para um entendimento aprofundado das decisões de engenharia, consulte os ADRs f
 * [ADR-0003: Idempotência Distribuída em Duas Camadas com Redis Lua CAS e Fail-Open](docs/adr/0003-distributed-idempotency-with-redis-and-fingerprinting.md)
 * [ADR-0004: Isolamento Multi-Tenant e Autenticação OAuth2 Resource Server](docs/adr/0004-multi-tenant-isolation-and-oauth2-security.md)
 * [ADR-0005: Padrões RESTful v1, Transições Stripe-Style e RFC 9457 ProblemDetail](docs/adr/0005-rest-api-standards-and-rfc9457-problem-detail.md)
+* [ADR-0006: Ingestão Assíncrona de Alta Vazão e Filas Particionadas por Pagador (Padrão Pix)](docs/adr/0006-asynchronous-ingress-and-partitioned-queues.md)
 
 ---
 
@@ -388,22 +439,25 @@ payments-api/
 ├── compose.yaml                   # Definição multi-serviço Docker Compose
 ├── Makefile                       # Comandos simplificados de build e infraestrutura
 ├── LICENSE                        # Licença MIT
-├── docs/adr/                      # Architecture Decision Records formais
+├── docs/adr/                      # Architecture Decision Records formais (ADR-0001 a ADR-0006)
 ├── http/payments.http             # Coleção de testes para IDE (IntelliJ / VS Code)
 ├── infra/keycloak/                # Provisionamento e Realm exportado do Keycloak
-├── scripts/test-e2e.sh            # Script automatizado de teste de ponta a ponta
+├── scripts/
+│   ├── benchmark.sh               # Benchmark de alta escala (10k a 100k requisições)
+│   ├── Benchmark.java             # Motor de teste concorrente com Java 21 Virtual Threads
+│   └── test-e2e.sh                # Script automatizado de validação ponta a ponta
 └── src/
     ├── main/
     │   ├── java/com/portfolio/payments/
-    │   │   ├── domain/            # Camada Pura de Domínio (Agregados, VOs, Eventos)
-    │   │   ├── application/       # Casos de Uso, Outbox Relay e Fingerprinting
-    │   │   ├── infrastructure/    # Adaptadores: PostgreSQL, Redis, Kafka, Security, OTel
+    │   │   ├── domain/            # Camada Pura de Domínio (Agregados, VOs, Eventos, Portas)
+    │   │   ├── application/       # Ingestão Assíncrona, Casos de Uso, Outbox Relay e Fingerprinting
+    │   │   ├── infrastructure/    # Adaptadores: PostgreSQL, Redis, Kafka (Ingress + Outbox), Security, OTel
     │   │   └── interfaces/rest/   # Controladores REST v1, RFC 9457 Exception Handler, DTOs
     │   └── resources/
     │       ├── db/migration/      # Migrações Flyway (V1 a V5)
     │       ├── redis/             # Scripts Lua atômicos para CAS
-    │       └── application.yml    # Configurações com suporte a Profiles
-    └── test/                      # Testes Unitários, de Integração e ArchUnit
+    │       └── application.yml    # Configurações com suporte a Profiles e histogramas OTel
+    └── test/                      # Testes Unitários, de Integração, Concorrência e ArchUnit
 ```
 
 ---
