@@ -5,7 +5,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -16,7 +15,8 @@ import java.util.regex.Pattern;
 
 /**
  * Enterprise Benchmark & Mock Data Generator for Payments API.
- * Executável nativamente via Java 21: java scripts/Benchmark.java [args]
+ * Suporta execuções de alta escala (10.000 a 100.000+ requisições) com Java 21 Virtual Threads.
+ * Executável nativamente: java scripts/Benchmark.java [args]
  */
 public class Benchmark {
 
@@ -29,10 +29,10 @@ public class Benchmark {
     private static final String PURPLE = "\u001B[35m";
 
     public static void main(String[] args) throws Exception {
-        int totalRequests = 10000;
-        int concurrency = 50;
-        int replayCount = 500;
-        int transitionCount = 1000;
+        int totalRequests = 100000;
+        int concurrency = 60;
+        int replayCount = 2000;
+        int transitionCount = 5000;
         String host = "http://localhost:8181";
         String keycloakUrl = "http://localhost:8080";
 
@@ -47,14 +47,14 @@ public class Benchmark {
             }
         }
 
-        // Ajusta proporcionalmente para execuções menores
+        // Ajuste proporcional para execuções pequenas
         if (totalRequests < 1000) {
             replayCount = Math.max(1, totalRequests / 10);
             transitionCount = Math.max(1, totalRequests / 5);
         }
 
         System.out.println(BOLD + CYAN + "==========================================================================" + RESET);
-        System.out.println(BOLD + CYAN + "       PAYMENTS API - ENTERPRISE BENCHMARK & DATA GENERATOR" + RESET);
+        System.out.println(BOLD + CYAN + "       PAYMENTS API - ENTERPRISE HIGH-SCALE BENCHMARK (100K+)" + RESET);
         System.out.println(BOLD + CYAN + "==========================================================================" + RESET);
         System.out.printf(" Alvo API:       %s%s%s%n", GREEN, host, RESET);
         System.out.printf(" Keycloak IdP:   %s%s%s%n", GREEN, keycloakUrl, RESET);
@@ -69,44 +69,71 @@ public class Benchmark {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-        // 1. Obter Token OAuth2 no Keycloak
+        TokenProvider tokenProvider = new TokenProvider(client, keycloakUrl);
         System.out.print(" [1/4] Autenticando com Keycloak (merchant-acme)... ");
-        String token = authenticate(client, keycloakUrl);
-        System.out.println(GREEN + "OK (Token JWT obtido)" + RESET);
+        tokenProvider.getValidToken();
+        System.out.println(GREEN + "OK (Token JWT obtido e renovável)" + RESET);
 
         String runId = UUID.randomUUID().toString().substring(0, 8);
 
-        // 2. Fase 1: Criação de Pagamentos (POST /v1/payments)
+        // Fase 1: Criação de Pagamentos
         System.out.println("\n" + BOLD + " [2/4] Fase 1: Criação de " + String.format("%,d", totalRequests) + " Pagamentos..." + RESET);
-        List<CreatedPayment> createdList = Collections.synchronizedList(new ArrayList<>(totalRequests));
-        BenchmarkResult creationResult = runCreationPhase(client, host, token, runId, totalRequests, concurrency, createdList);
+        List<CreatedPayment> sampleList = Collections.synchronizedList(new ArrayList<>(Math.min(10000, totalRequests)));
+        BenchmarkResult creationResult = runCreationPhase(client, host, tokenProvider, runId, totalRequests, concurrency, sampleList);
         printPhaseSummary("FASE 1: CRIAÇÃO DE PAGAMENTOS (POST /v1/payments)", creationResult);
 
-        // 3. Fase 2: Replays Idempotentes
+        // Fase 2: Replays Idempotentes
         BenchmarkResult replayResult = null;
-        if (replayCount > 0 && !createdList.isEmpty()) {
+        if (replayCount > 0 && !sampleList.isEmpty()) {
             System.out.println("\n" + BOLD + " [3/4] Fase 2: Replay Idempotente de " + String.format("%,d", replayCount) + " Pagamentos (Teste de Cache Redis)..." + RESET);
-            replayResult = runReplayPhase(client, host, token, createdList, replayCount, concurrency);
+            replayResult = runReplayPhase(client, host, tokenProvider, sampleList, replayCount, concurrency);
             printPhaseSummary("FASE 2: REPLAY IDEMPOTENTE (CACHE REDIS HIT)", replayResult);
         }
 
-        // 4. Fase 3: Transições de Estado (POST /v1/payments/{id}/authorize)
+        // Fase 3: Transições de Estado
         BenchmarkResult transitionResult = null;
-        if (transitionCount > 0 && !createdList.isEmpty()) {
+        if (transitionCount > 0 && !sampleList.isEmpty()) {
             System.out.println("\n" + BOLD + " [4/4] Fase 3: Transição de Estado de " + String.format("%,d", transitionCount) + " Pagamentos (/authorize com If-Match)..." + RESET);
-            transitionResult = runTransitionPhase(client, host, token, createdList, transitionCount, concurrency);
+            transitionResult = runTransitionPhase(client, host, tokenProvider, sampleList, transitionCount, concurrency);
             printPhaseSummary("FASE 3: TRANSIÇÕES DE ESTADO (MÁQUINA DE ESTADOS)", transitionResult);
         }
 
-        // 5. Relatório Consolidado
+        // Relatório Consolidado
         System.out.println("\n" + BOLD + GREEN + "==========================================================================" + RESET);
-        System.out.println(BOLD + GREEN + "                        BENCHMARK CONCLUÍDO COM SUCESSO" + RESET);
+        System.out.println(BOLD + GREEN + "                  BENCHMARK DE 100K CONCLUÍDO COM SUCESSO" + RESET);
         System.out.println(BOLD + GREEN + "==========================================================================" + RESET);
 
         exportMarkdownReport("benchmark-report.md", totalRequests, concurrency, creationResult, replayResult, transitionResult, host);
         System.out.printf("%n Relatório salvo em: %s%s%s%n", BOLD + CYAN, "benchmark-report.md", RESET);
         System.out.printf(" Visualize os dados no Grafana:  %shttp://localhost:3000%s%n", CYAN, RESET);
         System.out.printf(" Inspecione os eventos no Kafka: %shttp://localhost:8085%s%n%n", CYAN, RESET);
+    }
+
+    private static class TokenProvider {
+        private final HttpClient client;
+        private final String keycloakUrl;
+        private volatile String token;
+        private volatile long expiresAt = 0;
+
+        public TokenProvider(HttpClient client, String keycloakUrl) {
+            this.client = client;
+            this.keycloakUrl = keycloakUrl;
+        }
+
+        public synchronized String getValidToken() {
+            long now = System.currentTimeMillis();
+            if (token == null || now >= expiresAt - 30_000) {
+                try {
+                    this.token = authenticate(client, keycloakUrl);
+                    this.expiresAt = now + 180_000; // renova a cada 3 minutos
+                } catch (Exception e) {
+                    if (this.token == null) {
+                        throw new RuntimeException("Falha ao autenticar com Keycloak: " + e.getMessage(), e);
+                    }
+                }
+            }
+            return token;
+        }
     }
 
     private static String authenticate(HttpClient client, String keycloakUrl) throws Exception {
@@ -119,22 +146,24 @@ public class Benchmark {
 
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
-            throw new IllegalStateException("Falha ao autenticar no Keycloak: HTTP " + response.statusCode() + " - " + response.body());
+            throw new IllegalStateException("Falha ao autenticar no Keycloak: HTTP " + response.statusCode());
         }
         Matcher matcher = Pattern.compile("\"access_token\"\\s*:\\s*\"([^\"]+)\"").matcher(response.body());
         if (matcher.find()) {
             return matcher.group(1);
         }
-        throw new IllegalStateException("access_token não encontrado na resposta do Keycloak");
+        throw new IllegalStateException("access_token não encontrado");
     }
 
     private static BenchmarkResult runCreationPhase(
-        HttpClient client, String host, String token, String runId,
-        int total, int concurrency, List<CreatedPayment> createdList
+        HttpClient client, String host, TokenProvider tokenProvider, String runId,
+        int total, int concurrency, List<CreatedPayment> sampleList
     ) throws Exception {
-        List<Long> latencies = new CopyOnWriteArrayList<>();
+        long[] latenciesNanos = new long[total];
         Map<Integer, AtomicInteger> statusCounts = new ConcurrentHashMap<>();
         AtomicInteger completedCounter = new AtomicInteger(0);
+        int progressStep = Math.max(500, total / 100);
+
         String[] currencies = {"BRL", "BRL", "BRL", "BRL", "USD", "EUR"};
         Random random = new Random(42);
 
@@ -161,11 +190,12 @@ public class Benchmark {
                 futures.add(executor.submit(() -> {
                     try {
                         semaphore.acquire();
+                        String currentToken = tokenProvider.getValidToken();
                         long reqStart = System.nanoTime();
 
                         HttpRequest req = HttpRequest.newBuilder()
                             .uri(URI.create(host + "/v1/payments"))
-                            .header("Authorization", "Bearer " + token)
+                            .header("Authorization", "Bearer " + currentToken)
                             .header("Content-Type", "application/json")
                             .header("Idempotency-Key", idemKey)
                             .POST(HttpRequest.BodyPublishers.ofString(payload))
@@ -173,21 +203,21 @@ public class Benchmark {
 
                         HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
                         long duration = System.nanoTime() - reqStart;
-                        latencies.add(duration);
+                        latenciesNanos[seq] = duration;
 
                         int code = resp.statusCode();
                         statusCounts.computeIfAbsent(code, k -> new AtomicInteger(0)).incrementAndGet();
 
-                        if (code == 201) {
+                        if (code == 201 && sampleList.size() < 10000) {
                             String paymentId = extractId(resp.body());
                             String etag = resp.headers().firstValue("ETag").orElse("\"v0\"");
                             if (paymentId != null) {
-                                createdList.add(new CreatedPayment(paymentId, idemKey, payload, etag));
+                                sampleList.add(new CreatedPayment(paymentId, idemKey, payload, etag));
                             }
                         }
 
                         int current = completedCounter.incrementAndGet();
-                        if (current % 500 == 0 || current == total) {
+                        if (current % progressStep == 0 || current == total) {
                             renderProgress(current, total, startNanos);
                         }
                     } catch (Exception e) {
@@ -204,18 +234,19 @@ public class Benchmark {
         }
 
         long totalNanos = System.nanoTime() - startNanos;
-        System.out.println(); // nova linha após progress bar
-        return calculateMetrics(latencies, statusCounts, totalNanos, total);
+        System.out.println();
+        return calculateMetricsFromArray(latenciesNanos, statusCounts, totalNanos, total);
     }
 
     private static BenchmarkResult runReplayPhase(
-        HttpClient client, String host, String token,
-        List<CreatedPayment> createdList, int count, int concurrency
+        HttpClient client, String host, TokenProvider tokenProvider,
+        List<CreatedPayment> sampleList, int count, int concurrency
     ) throws Exception {
-        int target = Math.min(count, createdList.size());
-        List<Long> latencies = new CopyOnWriteArrayList<>();
+        int target = Math.min(count, sampleList.size());
+        long[] latenciesNanos = new long[target];
         Map<Integer, AtomicInteger> statusCounts = new ConcurrentHashMap<>();
         AtomicInteger completedCounter = new AtomicInteger(0);
+        int progressStep = Math.max(100, target / 50);
 
         long startNanos = System.nanoTime();
 
@@ -224,15 +255,17 @@ public class Benchmark {
             List<Future<?>> futures = new ArrayList<>(target);
 
             for (int i = 0; i < target; i++) {
-                CreatedPayment item = createdList.get(i);
+                final int seq = i;
+                CreatedPayment item = sampleList.get(i);
                 futures.add(executor.submit(() -> {
                     try {
                         semaphore.acquire();
+                        String currentToken = tokenProvider.getValidToken();
                         long reqStart = System.nanoTime();
 
                         HttpRequest req = HttpRequest.newBuilder()
                             .uri(URI.create(host + "/v1/payments"))
-                            .header("Authorization", "Bearer " + token)
+                            .header("Authorization", "Bearer " + currentToken)
                             .header("Content-Type", "application/json")
                             .header("Idempotency-Key", item.idempotencyKey)
                             .POST(HttpRequest.BodyPublishers.ofString(item.payload))
@@ -240,13 +273,13 @@ public class Benchmark {
 
                         HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
                         long duration = System.nanoTime() - reqStart;
-                        latencies.add(duration);
+                        latenciesNanos[seq] = duration;
 
                         int code = resp.statusCode();
                         statusCounts.computeIfAbsent(code, k -> new AtomicInteger(0)).incrementAndGet();
 
                         int current = completedCounter.incrementAndGet();
-                        if (current % 250 == 0 || current == target) {
+                        if (current % progressStep == 0 || current == target) {
                             renderProgress(current, target, startNanos);
                         }
                     } catch (Exception e) {
@@ -264,17 +297,18 @@ public class Benchmark {
 
         long totalNanos = System.nanoTime() - startNanos;
         System.out.println();
-        return calculateMetrics(latencies, statusCounts, totalNanos, target);
+        return calculateMetricsFromArray(latenciesNanos, statusCounts, totalNanos, target);
     }
 
     private static BenchmarkResult runTransitionPhase(
-        HttpClient client, String host, String token,
-        List<CreatedPayment> createdList, int count, int concurrency
+        HttpClient client, String host, TokenProvider tokenProvider,
+        List<CreatedPayment> sampleList, int count, int concurrency
     ) throws Exception {
-        int target = Math.min(count, createdList.size());
-        List<Long> latencies = new CopyOnWriteArrayList<>();
+        int target = Math.min(count, sampleList.size());
+        long[] latenciesNanos = new long[target];
         Map<Integer, AtomicInteger> statusCounts = new ConcurrentHashMap<>();
         AtomicInteger completedCounter = new AtomicInteger(0);
+        int progressStep = Math.max(100, target / 50);
 
         long startNanos = System.nanoTime();
 
@@ -283,28 +317,30 @@ public class Benchmark {
             List<Future<?>> futures = new ArrayList<>(target);
 
             for (int i = 0; i < target; i++) {
-                CreatedPayment item = createdList.get(i);
+                final int seq = i;
+                CreatedPayment item = sampleList.get(i);
                 futures.add(executor.submit(() -> {
                     try {
                         semaphore.acquire();
+                        String currentToken = tokenProvider.getValidToken();
                         long reqStart = System.nanoTime();
 
                         HttpRequest req = HttpRequest.newBuilder()
                             .uri(URI.create(host + "/v1/payments/" + item.id + "/authorize"))
-                            .header("Authorization", "Bearer " + token)
+                            .header("Authorization", "Bearer " + currentToken)
                             .header("If-Match", item.etag)
                             .POST(HttpRequest.BodyPublishers.noBody())
                             .build();
 
                         HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
                         long duration = System.nanoTime() - reqStart;
-                        latencies.add(duration);
+                        latenciesNanos[seq] = duration;
 
                         int code = resp.statusCode();
                         statusCounts.computeIfAbsent(code, k -> new AtomicInteger(0)).incrementAndGet();
 
                         int current = completedCounter.incrementAndGet();
-                        if (current % 250 == 0 || current == target) {
+                        if (current % progressStep == 0 || current == target) {
                             renderProgress(current, target, startNanos);
                         }
                     } catch (Exception e) {
@@ -322,7 +358,7 @@ public class Benchmark {
 
         long totalNanos = System.nanoTime() - startNanos;
         System.out.println();
-        return calculateMetrics(latencies, statusCounts, totalNanos, target);
+        return calculateMetricsFromArray(latenciesNanos, statusCounts, totalNanos, target);
     }
 
     private static void renderProgress(int current, int total, long startNanos) {
@@ -347,29 +383,30 @@ public class Benchmark {
         System.out.flush();
     }
 
-    private static BenchmarkResult calculateMetrics(
-        List<Long> latenciesNanos, Map<Integer, AtomicInteger> statusCounts,
+    private static BenchmarkResult calculateMetricsFromArray(
+        long[] latenciesNanos, Map<Integer, AtomicInteger> statusCounts,
         long totalNanos, int totalCount
     ) {
         double totalSeconds = totalNanos / 1_000_000_000.0;
         double throughput = totalSeconds > 0 ? (totalCount / totalSeconds) : 0;
 
-        List<Double> latenciesMs = new ArrayList<>(latenciesNanos.size());
-        for (long n : latenciesNanos) {
-            latenciesMs.add(n / 1_000_000.0);
-        }
-        Collections.sort(latenciesMs);
-
-        double min = latenciesMs.isEmpty() ? 0 : latenciesMs.get(0);
-        double max = latenciesMs.isEmpty() ? 0 : latenciesMs.get(latenciesMs.size() - 1);
+        double[] latenciesMs = new double[latenciesNanos.length];
         double sum = 0;
-        for (double d : latenciesMs) sum += d;
-        double avg = latenciesMs.isEmpty() ? 0 : (sum / latenciesMs.size());
+        for (int i = 0; i < latenciesNanos.length; i++) {
+            double ms = latenciesNanos[i] / 1_000_000.0;
+            latenciesMs[i] = ms;
+            sum += ms;
+        }
+        Arrays.sort(latenciesMs);
 
-        double p50 = getPercentile(latenciesMs, 50.0);
-        double p90 = getPercentile(latenciesMs, 90.0);
-        double p95 = getPercentile(latenciesMs, 95.0);
-        double p99 = getPercentile(latenciesMs, 99.0);
+        double min = latenciesMs.length == 0 ? 0 : latenciesMs[0];
+        double max = latenciesMs.length == 0 ? 0 : latenciesMs[latenciesMs.length - 1];
+        double avg = latenciesMs.length == 0 ? 0 : (sum / latenciesMs.length);
+
+        double p50 = getPercentileFromSortedArray(latenciesMs, 50.0);
+        double p90 = getPercentileFromSortedArray(latenciesMs, 90.0);
+        double p95 = getPercentileFromSortedArray(latenciesMs, 95.0);
+        double p99 = getPercentileFromSortedArray(latenciesMs, 99.0);
 
         Map<Integer, Integer> finalCounts = new TreeMap<>();
         for (var entry : statusCounts.entrySet()) {
@@ -379,10 +416,10 @@ public class Benchmark {
         return new BenchmarkResult(totalCount, totalSeconds, throughput, min, max, avg, p50, p90, p95, p99, finalCounts);
     }
 
-    private static double getPercentile(List<Double> sorted, double percentile) {
-        if (sorted.isEmpty()) return 0;
-        int index = (int) Math.ceil((percentile / 100.0) * sorted.size()) - 1;
-        return sorted.get(Math.max(0, Math.min(index, sorted.size() - 1)));
+    private static double getPercentileFromSortedArray(double[] sorted, double percentile) {
+        if (sorted.length == 0) return 0;
+        int index = (int) Math.ceil((percentile / 100.0) * sorted.length) - 1;
+        return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
     }
 
     private static void printPhaseSummary(String title, BenchmarkResult res) {
@@ -415,7 +452,7 @@ public class Benchmark {
         String host
     ) {
         try (PrintWriter writer = new PrintWriter(new FileWriter(filename))) {
-            writer.println("# 📊 Relatório Executivo de Benchmark & Carga da API de Pagamentos");
+            writer.println("# 📊 Relatório Executivo de Benchmark & Carga da API de Pagamentos (100k)");
             writer.println();
             writer.println("> **Data da Execução:** " + Instant.now());
             writer.println("> **Ambiente:** Local / WSL 2 (Debian 13) • Java 21 LTS (Virtual Threads)");
@@ -455,7 +492,7 @@ public class Benchmark {
             writer.println();
             writer.println("| Métrica | Valor |");
             writer.println("| :--- | :--- |");
-            writer.printf("| **Tempo Total de Execução** | `%.2f segundos` |%n", creation.totalSeconds);
+            writer.printf("| **Tempo Total de Execução** | `%.2f segundos (%.1f minutos)` |%n", creation.totalSeconds, creation.totalSeconds / 60.0);
             writer.printf("| **Throughput Médio** | `%.1f requisições/segundo` |%n", creation.throughput);
             writer.printf("| **Latência Mínima** | `%.2f ms` |%n", creation.minMs);
             writer.printf("| **Latência p50 (Mediana)** | `%.2f ms` |%n", creation.p50Ms);
@@ -470,7 +507,7 @@ public class Benchmark {
             writer.println();
             writer.println("1. **Grafana LGTM** (`http://localhost:3000`):");
             writer.println("   * Abra o dashboard **Payments API - Overview**.");
-            writer.println("   * Observe o card **Total Payments Created** exibindo o volume completo populado.");
+            writer.println("   * Observe o card **Total Payments Created** exibindo o volume completo populado (100k+).");
             writer.println("   * Observe os gráficos de **Throughput**, **Latency (p95/p99)** e **Payments Created by Currency**.");
             writer.println();
             writer.println("2. **Apache Kafka UI** (`http://localhost:8085`):");
