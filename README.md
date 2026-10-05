@@ -47,185 +47,205 @@ O **Payments API** é uma plataforma distribuída de alta resiliência e baixís
 O núcleo de negócio é totalmente desacoplado da infraestrutura através de portas e adaptadores. Regras de negócio, cálculos monetários de alta precisão e transições de estado são independentes de frameworks.
 
 ```mermaid
-graph TD
-    subgraph ClientLayer ["Consumidores e Clientes"]
-        SPA["Web SPA / Mobile"]
-        Partner["Merchant API Client"]
-        Ops["Backoffice / Ops Admin"]
-    end
+flowchart LR
+    Client(["Cliente / Lojista"])
 
-    subgraph InterfaceAdapters ["Driving Adapters / Interfaces REST v1"]
+    subgraph IN["Interfaces REST v1"]
         PC["PaymentController"]
-        AEH["ApiExceptionHandler (RFC 9457)"]
-        SEC["SecurityConfig (OAuth2 Resource Server)"]
-        Swagger["OpenAPI 3 / Springdoc"]
     end
 
-    subgraph ApplicationLayer ["Application Layer / Use Cases"]
+    subgraph APP["Application"]
         CP["CreatePaymentUseCase"]
-        PIS["PaymentIngressService"]
         TP["TransitionPaymentUseCase"]
-        GP["GetPaymentUseCase"]
+        PIS["PaymentIngressService"]
         OR["OutboxRelay"]
-        RF["RequestFingerprint (SHA-256)"]
-        PM["PaymentMetrics (4-Phase Breakdown)"]
+        AP[["Portas da Aplicação<br/>IdempotencyStore<br/>PaymentIngressPublisher<br/>OutboxPublisher<br/>CurrentMerchant"]]
     end
 
-    subgraph PureDomain ["Pure Domain (Java 21)"]
-        P["Payment Aggregate Root"]
-        M["Money Value Object"]
-        OE["OutboxEvent Entity"]
-        PE["PaymentEvent Sealed Types"]
-        PR["PaymentRepository Port"]
-        IS["IdempotencyStore Port"]
-        PIP["PaymentIngressPublisher Port"]
-        CM["CurrentMerchant Port"]
+    subgraph DOM["Domain (Java puro)"]
+        PAY["Payment + PaymentStatus<br/>Money, PaymentEvent"]
+        DP[["Portas do Domínio<br/>PaymentRepository<br/>OutboxRepository"]]
     end
 
-    subgraph DrivenAdapters ["Driven Adapters / Infrastructure"]
-        JPA["JpaPaymentRepositoryAdapter (PostgreSQL 16)"]
-        RIS["RedisIdempotencyStore (Lua CAS + Circuit Breaker)"]
-        KIP["KafkaIngressPublisher (Tópico payments.ingress)"]
-        KIC["PaymentIngressConsumer (Worker por Partição)"]
-        KOP["KafkaOutboxPublisher (Tópico payments.events KRaft)"]
-        JWT["JwtCurrentMerchant (Keycloak 26)"]
-        OTEL["OpenTelemetry Bridge (Grafana LGTM Stack)"]
+    subgraph INFRA["Infrastructure (Adapters)"]
+        RIS["RedisIdempotencyStore"]
+        KPIP["KafkaPaymentIngressPublisher"]
+        PIC["PaymentIngressConsumer"]
+        KOP["KafkaOutboxPublisher"]
+        JWT["JwtCurrentMerchant"]
+        DB["JpaPaymentRepositoryAdapter<br/>JdbcOutboxRepositoryAdapter"]
     end
 
-    ClientLayer --> InterfaceAdapters
-    InterfaceAdapters --> ApplicationLayer
-    ApplicationLayer --> PureDomain
-    ApplicationLayer --> PR
-    ApplicationLayer --> IS
-    ApplicationLayer --> PIP
-    ApplicationLayer --> CM
-    PR -.-> JPA
-    IS -.-> RIS
-    PIP -.-> KIP
-    KIC --> PIS
-    CM -.-> JWT
-    OR --> KOP
+    Client --> PC
+    PC --> CP & TP
+    CP & TP & PIS --> PAY
+    CP & OR --> AP
+    PIS & TP & OR --> DP
+    PIC --> PIS
+
+    RIS -. implementa .-> AP
+    KPIP -. implementa .-> AP
+    KOP -. implementa .-> AP
+    JWT -. implementa .-> AP
+    DB -. implementa .-> DP
+
+    classDef iface fill:#dbeafe,stroke:#2563eb,color:#0f172a
+    classDef app fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    classDef dom fill:#fef3c7,stroke:#d97706,color:#0f172a
+    classDef infra fill:#f3e8ff,stroke:#9333ea,color:#0f172a
+    class PC iface
+    class CP,TP,PIS,OR,AP app
+    class PAY,DP dom
+    class RIS,KPIP,PIC,KOP,JWT,DB infra
 ```
 
 ---
 
-### 2. Ingestão Assíncrona & Idempotência Distribuída (Padrão Pix)
+### 2. Ingestão Assíncrona na Borda HTTP (Padrão Pix)
 
 Sob alta carga, a API não bloqueia aguardando I/O síncrono de banco de dados. Ela adquire o lock atômico no Redis, enfileira o comando no Kafka particionado por pagador e devolve `HTTP 202 Accepted` em ~4ms:
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as Cliente (Lojista)
+    actor C as Cliente (Lojista)
     participant API as PaymentController
-    participant Redis as Redis (Lua CAS)
-    participant KafkaIn as Kafka (payments.ingress)
-    participant Worker as PaymentIngressConsumer
-    participant DB as PostgreSQL (ACID)
-    participant KafkaOut as Kafka (payments.events)
+    participant R as Redis (Lua CAS)
+    participant PG as PostgreSQL
+    participant K as Kafka (payments.ingress)
 
-    Client->>API: POST /v1/payments (Idempotency-Key: X)
-    API->>API: Calcula SHA-256 Fingerprint do payload
-    API->>Redis: EVALSHA idempotency_cas.lua (tryAcquire)
-    
-    alt Chave já concluída com mesmo Fingerprint (Replay)
-        Redis-->>API: COMPLETED + PaymentId
-        API->>DB: Busca pagamento por ID
-        API-->>Client: HTTP 200 OK (Idempotent-Replayed: true, ETag: v0)
-    else Chave já concluída com Fingerprint DIFERENTE
-        Redis-->>API: MISMATCH
-        API-->>Client: HTTP 422 Unprocessable Content (RFC 9457 ProblemDetail)
+    C->>API: POST /v1/payments (Idempotency-Key: X)
+    API->>API: Fingerprint SHA-256 do payload
+    API->>R: tryAcquire(key, fingerprint)
+    alt Chave já concluída com mesmo payload (Replay)
+        R-->>API: COMPLETED (paymentId)
+        API->>PG: findById
+        API-->>C: HTTP 200 OK (Idempotent-Replayed: true, ETag: v0)
+    else Chave já concluída com payload diferente
+        R-->>API: MISMATCH
+        API-->>C: HTTP 422 Unprocessable Content (RFC 9457)
     else Requisição idêntica concorrente em andamento
-        Redis-->>API: IN_PROGRESS
-        API-->>Client: HTTP 409 Conflict (Retry-After: 1)
-    else Chave Nova (Lock Adquirido com Sucesso)
-        Redis-->>API: ACQUIRED (TTL: 120s)
-        API->>KafkaIn: send(key=payerId, payload) [Partição por Pagador]
-        API-->>Client: HTTP 202 Accepted (Location, ETag: "v0", Preference-Applied: respond-async)
-        
-        Note over Worker,DB: Processamento Assíncrono Desacoplado
-        Worker->>KafkaIn: Consome lote por partição (FIFO per-payer)
-        Worker->>DB: INSERT payments (merchant_id, idempotency_key)
-        Worker->>DB: INSERT outbox_events (status: PENDING)
-        Worker->>Redis: EVALSHA idempotency_cas.lua (complete, TTL: 24h)
-        
-        Note over Worker,KafkaOut: Outbox Relay Engine (Entrega At-Least-Once)
-        DB->>KafkaOut: Drena outbox_events para payments.events (CloudEvents v1.0)
+        R-->>API: IN_PROGRESS
+        API-->>C: HTTP 409 Conflict
+    else Chave Nova (Lock Adquirido)
+        R-->>API: ACQUIRED (TTL: 120s)
+        API->>PG: findByMerchantIdAndIdempotencyKey (fallback)
+        API->>K: send(key = payerId) [Partição por Pagador]
+        API-->>C: HTTP 202 Accepted (Location, ETag: "v0", Preference-Applied: respond-async)
     end
 ```
 
 ---
 
-### 3. Decomposição da Latência em 4 Fases
+### 3. Processamento Assíncrono de Ingestão e Transactional Outbox
 
-Para garantir visibilidade cirúrgica da performance financeira, a API decompõe o ciclo de vida do pagamento em 4 métricas distintas:
+O worker consome lotes por partição garantindo FIFO por conta de pagador, grava o pagamento e o evento outbox em uma transação ACID relacional única, e o Outbox Relay drena os eventos para publicação externa:
 
-```text
-[ Cliente ] 
-    │
-    ▼ (1) Ingress Latency: ~4.1ms p50  ──► [ HTTP 202 Accepted ]
-[ Borda API ]
-    │
-    ▼ (2) Queue Transit Latency: Buffer amortecedor no Kafka
-[ Tópico: payments.ingress (chave = payerId) ]
-    │
-    ▼ (3) DB Persistence Latency: ~2.3ms p50
-[ PostgreSQL ACID: payments + outbox_events ]
-    │
-    ▼ (4) E2E Total Latency: Duração consolidada ponta a ponta
+```mermaid
+sequenceDiagram
+    autonumber
+    participant KIn as Kafka (payments.ingress)
+    participant W as PaymentIngressConsumer
+    participant PG as PostgreSQL (ACID)
+    participant R as Redis (Lua CAS)
+    participant OR as OutboxRelay
+    participant KOut as Kafka (payments.events)
+
+    KIn->>W: Consome lote por partição (FIFO per-payer)
+    rect rgba(22, 163, 74, 0.12)
+        Note over W,PG: Transação ACID Relacional Única
+        W->>PG: INSERT payments (merchant_id, idempotency_key)
+        W->>PG: INSERT outbox_events (status: PENDING)
+    end
+    W->>R: complete(paymentId) [TTL: 24h]
+    loop Polling Assíncrono Desacoplado
+        OR->>PG: SELECT ... FOR UPDATE SKIP LOCKED
+        OR->>KOut: Publica CloudEvents v1.0 (key = paymentId)
+        OR->>PG: UPDATE outbox_events (status: PUBLISHED)
+    end
 ```
-
-| Fase | Métrica Micrometer / Prometheus | O que mede | Valor Típico (p50) |
-|---|---|---|---|
-| **1. Ingress** | `payments.latency.ingress` | Da chegada do HTTP até a emissão do `202 Accepted` | **~4.1 ms** |
-| **2. Queue Transit** | `payments.latency.queue.transit` | Tempo em trânsito/espera na fila do Kafka | **Amortecedor dinâmico** |
-| **3. DB Persistence**| `payments.latency.db.persistence` | Transação ACID relacional JDBC + Outbox | **~2.3 ms** |
-| **4. E2E Total** | `payments.latency.e2e.total` | Tempo total desde o request HTTP até a gravação em disco | **Tempo real consolidado** |
 
 ---
 
-### 4. Transactional Outbox & CloudEvents v1.0
+### 4. Decomposição da Latência em 4 Fases
+
+Para garantir visibilidade cirúrgica da performance financeira, a API decompõe o ciclo de vida do pagamento em 4 métricas distintas:
+
+```mermaid
+flowchart LR
+    A["1. Ingress<br/>Borda HTTP até 202"] --> B["2. Queue Transit<br/>Espera no Kafka"] --> C["3. DB Persistence<br/>Transação ACID JDBC"]
+    A -.-> E["4. E2E Total<br/>Ciclo Completo"]
+    C -.-> E
+
+    classDef phase fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
+    classDef total fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    class A,B,C phase
+    class E total
+```
+
+| Fase | Métrica Micrometer / Prometheus | O que mede | Valor Medido (p50) | Comportamento e Rationale |
+|---|---|---|---|---|
+| **1. Ingress** | `payments.latency.ingress` | Da chegada do HTTP até a emissão do `202 Accepted` | **~4.1 ms** | Validação sintática, lock Lua no Redis e envio ao Kafka. Rápido e imune a contenção de banco. |
+| **2. Queue Transit** | `payments.latency.queue.transit` | Tempo de espera e trânsito na fila `payments.ingress` | **Amortecedor dinâmico** (~1.17 s sob saturação de 10k) | Sob rajadas massivas, o Kafka amortece a fila protegendo o banco relacional de colapso por starvation. |
+| **3. DB Persistence**| `payments.latency.db.persistence` | Transação ACID relacional JDBC + Outbox | **~2.3 ms** | Persistência relacional pura executada pelo worker com JDBC batch de alta vazão. |
+| **4. E2E Total** | `payments.latency.e2e.total` | Duração consolidada da requisição até a gravação em disco | **~1.17 s (sob rajada)** / **~6.5 ms (em fluxo estável)** | Mede o ciclo completo de ponta a ponta visível no painel do Grafana. |
+
+---
+
+### 5. Transactional Outbox & CloudEvents v1.0
 
 Eliminação definitiva de dual-write. O evento de domínio é persistido na mesma transação relacional e publicado de forma assíncrona e confiável no Apache Kafka.
 
 ```mermaid
 flowchart LR
-    subgraph Transaction ["Transação Atômica PostgreSQL"]
-        P["Pagamento Atualizado"]
-        O["Evento Outbox Gravado"]
+    subgraph TX["Transação Atômica PostgreSQL"]
+        P["INSERT / UPDATE payments"] --> O["INSERT outbox_events<br/>status = PENDING"]
     end
 
-    subgraph Relay ["Outbox Relay Engine"]
-        Worker["Poller Assíncrono (SKIP LOCKED)"]
+    subgraph Relay["Outbox Relay Engine"]
+        Worker["Poller Assíncrono<br/>SKIP LOCKED"]
     end
 
-    subgraph KafkaCluster ["Apache Kafka 4.x KRaft"]
+    subgraph Kafka["Apache Kafka 4.x KRaft"]
         Topic["Tópico: payments.events<br/>Headers: CloudEvents v1.0"]
-        DLQ["Tópico: payments.dlq<br/>Dead Letter Queue"]
     end
 
     O --> Worker
     Worker -->|Entrega At-Least-Once| Topic
-    Worker -.->|Falhas Críticas| DLQ
+    Worker -.->|Falha Transitória| Retry["status = FAILED<br/>Retry com Backoff"]
+    Retry -.->|Próximo ciclo| Worker
+
+    classDef tx fill:#eff6ff,stroke:#2563eb,color:#0f172a
+    classDef relay fill:#fef3c7,stroke:#d97706,color:#0f172a
+    classDef kafka fill:#f3e8ff,stroke:#9333ea,color:#0f172a
+    classDef err fill:#fee2e2,stroke:#dc2626,color:#0f172a
+    class P,O tx
+    class Worker relay
+    class Topic kafka
+    class Retry err
 ```
 
 ---
 
-### 5. Máquina de Estados Finita do Pagamento
+### 6. Máquina de Estados Finita do Pagamento
 
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING: POST /v1/payments (202 Accepted)
-    PENDING --> AUTHORIZED: POST /authorize [If-Match v0]
+    PENDING --> AUTHORIZED: POST /authorize [If-Match]
+    PENDING --> CANCELLED: POST /cancel
     PENDING --> FAILED: POST /fail [admin]
-    PENDING --> CANCELED: POST /cancel
-    AUTHORIZED --> CAPTURED: POST /capture [If-Match v1]
-    AUTHORIZED --> CANCELED: POST /cancel
+    AUTHORIZED --> CAPTURED: POST /capture [If-Match]
+    AUTHORIZED --> FAILED: POST /fail [admin]
     CAPTURED --> SETTLED: POST /settle [admin]
+    CAPTURED --> FAILED: POST /fail [admin]
     SETTLED --> [*]
     FAILED --> [*]
-    CANCELED --> [*]
+    CANCELLED --> [*]
 ```
+
+> [!NOTE]
+> Toda transição de estado exige validação de concorrência otimista via cabeçalho `If-Match: "v<version>"` contendo a versão atual (ETag). Se houver divergência de versão concorrente, a API responde estritamente com **HTTP 412 Precondition Failed**.
 
 ---
 

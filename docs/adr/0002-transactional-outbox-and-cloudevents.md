@@ -19,7 +19,7 @@ Além disso, a integração com múltiplos consumidores e parceiros corporativos
 2. **Drenagem Assíncrona e Segregação de I/O (`OutboxRelay`)**:
    - O poller `OutboxRelay` opera estritamente fora de transações de longa duração (`@Transactional` removido do loop principal).
    - Utiliza lock pessimista por lote com concorrência segura (`SELECT ... FOR UPDATE SKIP LOCKED`) e concessão de lease temporal (`locked_until`), permitindo múltiplas instâncias concorrentes da API sem colisão.
-   - Cada chamada de rede externa (Kafka I/O) ocorre de forma isolada, atualizando o status do outbox (`PUBLISHED`, `FAILED` com backoff exponencial ou dead-lettering após 5 tentativas).
+   - Cada chamada de rede externa (Kafka I/O) ocorre de forma isolada, atualizando o status do outbox (`PUBLISHED` ou `FAILED` com backoff exponencial para novas tentativas pelo relay).
    - O publisher é protegido por Circuit Breaker do Resilience4j: se o Kafka estiver degradado, o relay preserva as tentativas dos registros e entra em estado de espera.
 
 3. **Padronização CloudEvents v1.0 (Binary Mode)**:
