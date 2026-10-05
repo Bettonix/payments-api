@@ -21,13 +21,14 @@ public record Money(BigDecimal amount, Currency currency) {
         Objects.requireNonNull(amount, "amount required");
         Objects.requireNonNull(currency, "currency required");
         int maxFractionDigits = currency.getDefaultFractionDigits();
-        if (amount.scale() > maxFractionDigits) {
-            throw new IllegalArgumentException(
-                "amount scale " + amount.scale() + " exceeds currency "
-                + currency.getCurrencyCode() + " fraction digits (" + maxFractionDigits + ")");
-        }
-        if (amount.scale() < maxFractionDigits) {
-            amount = amount.setScale(maxFractionDigits, RoundingMode.UNNECESSARY);
+        if (maxFractionDigits >= 0) {
+            try {
+                amount = amount.setScale(maxFractionDigits, RoundingMode.UNNECESSARY);
+            } catch (ArithmeticException e) {
+                throw new IllegalArgumentException(
+                    "amount scale " + amount.scale() + " exceeds currency "
+                    + currency.getCurrencyCode() + " fraction digits (" + maxFractionDigits + ")");
+            }
         }
     }
 

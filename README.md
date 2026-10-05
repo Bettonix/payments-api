@@ -150,8 +150,8 @@ Documentação interativa Swagger UI: `http://localhost:8181/swagger-ui.html`
 ```bash
 export TOKEN=$(curl -s -X POST http://localhost:8080/realms/payments/protocol/openid-connect/token \
   -d "grant_type=client_credentials" \
-  -d "client_id=payments-service" \
-  -d "client_secret=payments-secret" | jq -r .access_token)
+  -d "client_id=merchant-acme" \
+  -d "client_secret=acme-secret" | jq -r .access_token)
 ```
 
 ### Criar Pagamento com Idempotência

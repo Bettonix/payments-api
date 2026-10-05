@@ -3,9 +3,9 @@
 
 spring:
   datasource:
-    url: jdbc:postgresql://${POSTGRES_HOST:127.0.0.1}:${POSTGRES_PORT:5432}/${POSTGRES_DB:payments_api}
-    username: ${POSTGRES_USER:postgres}
-    password: ${POSTGRES_PASSWORD:}
+    url: jdbc:postgresql://${POSTGRES_HOST:127.0.0.1}:${POSTGRES_PORT:5432}/${POSTGRES_DB:payments}
+    username: ${POSTGRES_USER:payments}
+    password: ${POSTGRES_PASSWORD:payments}
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5

@@ -7,6 +7,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -45,6 +46,7 @@ public class OutboxRelay {
     private final OutboxPublisher publisher;
     private final CircuitBreaker circuitBreaker;
 
+    @Autowired
     public OutboxRelay(OutboxRepository repository,
                        OutboxPublisher publisher,
                        CircuitBreakerRegistry circuitBreakerRegistry) {

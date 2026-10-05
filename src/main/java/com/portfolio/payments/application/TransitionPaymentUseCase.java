@@ -36,6 +36,7 @@ public class TransitionPaymentUseCase {
     private final PaymentMetrics metrics;
     private final EventSerializer serializer;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public TransitionPaymentUseCase(PaymentRepository repository,
                                     OutboxRepository outbox,
                                     PaymentMetrics metrics,

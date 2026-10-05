@@ -50,6 +50,11 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: true
 
+app:
+  outbox:
+    publisher: ${OUTBOX_PUBLISHER:kafka}
+    relay-interval-ms: ${OUTBOX_RELAY_INTERVAL_MS:2000}
+
 server:
   port: 8181
   shutdown: graceful

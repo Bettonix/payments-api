@@ -8,6 +8,7 @@ import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
@@ -41,6 +42,7 @@ public class KafkaOutboxPublisher implements OutboxPublisher {
     private final String topic;
     private final Duration timeout;
 
+    @Autowired
     public KafkaOutboxPublisher(KafkaTemplate<String, String> kafka) {
         this(kafka, DEFAULT_TOPIC, DEFAULT_TIMEOUT);
     }
