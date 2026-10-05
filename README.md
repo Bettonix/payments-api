@@ -1,4 +1,4 @@
-# 💳 Payments API
+# Payments API
 
 <p align="center">
   <strong>Enterprise Financial Processing Platform & Distributed Systems Engine</strong><br>
@@ -19,7 +19,7 @@
 
 ---
 
-## 📌 Sumário Executivo
+## Sumário Executivo
 
 O **Payments API** é uma plataforma distribuída de alta resiliência e baixíssima latência projetada para processamento de pagamentos em escala massiva (100.000+ requisições com throughput sustentado superior a 1.700–2.500+ req/s por nó). Inspirado na arquitetura do **Pix (Banco Central do Brasil)** e em provedores de pagamentos globais (ex.: Stripe, Adyen), o sistema elimina os problemas clássicos de sistemas distribuídos sob altíssima concorrência: **dupla cobrança**, **dual-write**, **HikariCP pool starvation**, **contenção de locks relacionais** e **vazamento de dados entre lojistas (BOLA)**.
 
@@ -40,7 +40,7 @@ O **Payments API** é uma plataforma distribuída de alta resiliência e baixís
 
 ---
 
-## 🏛️ Arquitetura do Sistema
+## Arquitetura do Sistema
 
 ### 1. Hexagonal Architecture (Ports & Adapters)
 
@@ -229,7 +229,7 @@ stateDiagram-v2
 
 ---
 
-## 📡 Especificação da API REST `/v1/payments`
+## Especificação da API REST `/v1/payments`
 
 > [!IMPORTANT]
 > **Versionamento Estrito**: Todos os endpoints de produção são estritamente versionados sob o prefixo `/v1/payments`. Rotas legadas não versionadas (`/payments`) foram descontinuadas e respondem com **HTTP 404 Not Found**.
@@ -246,7 +246,7 @@ stateDiagram-v2
 
 ---
 
-## 🛠️ Stack Tecnológica & Engenharia
+## Stack Tecnológica & Engenharia
 
 | Camada | Tecnologia | Versão | Rationale de Arquitetura |
 |---|---|---|---|
@@ -263,7 +263,7 @@ stateDiagram-v2
 
 ---
 
-## 🚀 Como Executar Localmente
+## Como Executar Localmente
 
 ### Pré-requisitos
 * **WSL 2 (Ubuntu/Debian) ou Linux / macOS**
@@ -313,7 +313,7 @@ O benchmark gera automaticamente o relatório consolidado em [benchmark-report.m
 
 ---
 
-## 💡 Exemplos de Uso (cURL Interativo)
+## Exemplos de Uso (cURL Interativo)
 
 ### 1. Obter Token OAuth2 para o Lojista (`merchant-acme`)
 ```bash
@@ -404,21 +404,21 @@ curl -i -X GET http://localhost:8181/v1/payments/7e15f60b-4899-4c80-be31-7ff4042
 
 ---
 
-## 📊 Dashboards e Interfaces de Operação
+## Dashboards e Interfaces de Operação
 
 | Ferramenta | URL Local | Descrição |
 |---|---|---|
 | **Swagger UI** | [http://localhost:8181/swagger-ui.html](http://localhost:8181/swagger-ui.html) | Documentação interativa e sandbox de testes OpenAPI 3 |
 | **OpenAPI Spec** | [http://localhost:8181/v3/api-docs](http://localhost:8181/v3/api-docs) | Especificação OpenAPI 3 em formato JSON |
 | **Kafka UI** | [http://localhost:8085](http://localhost:8085) | Inspeção visual de mensagens nos tópicos `payments.ingress` e `payments.events` |
-| **Grafana LGTM** | [http://localhost:3000/d/payments-overview/payments-api-overview](http://localhost:3000/d/payments-overview/payments-api-overview) | Dashboard oficial com RED metrics, Outbox pending e **Latency Breakdown by Phase (p50 Mediana)** |
+| **Grafana LGTM** | [http://localhost:3000/d/payments-overview/payments-api-overview](http://localhost:3000/d/payments-overview/payments-api-overview) | Dashboard oficial com RED metrics, Outbox pending e Latency Breakdown by Phase (p50 Mediana) |
 | **Keycloak Admin** | [http://localhost:8080](http://localhost:8080) | Painel administrativo do Identity Provider (admin / admin) |
 | **Actuator Health**| [http://localhost:8181/actuator/health](http://localhost:8181/actuator/health) | Health check consolidado de persistência, mensageria e cache |
 | **Prometheus Metrics**| [http://localhost:8181/actuator/prometheus](http://localhost:8181/actuator/prometheus) | Métricas expostas para scraping de telemetria |
 
 ---
 
-## 📑 Architecture Decision Records (ADRs)
+## Architecture Decision Records (ADRs)
 
 Para um entendimento aprofundado das decisões de engenharia, consulte os ADRs formalizados em [docs/adr/](docs/adr/):
 
@@ -431,7 +431,7 @@ Para um entendimento aprofundado das decisões de engenharia, consulte os ADRs f
 
 ---
 
-## 📂 Estrutura do Projeto
+## Estrutura do Projeto
 
 ```text
 payments-api/
@@ -462,7 +462,7 @@ payments-api/
 
 ---
 
-## 📄 Licença
+## Licença
 
 Este projeto está licenciado sob os termos da licença **MIT**. Consulte o arquivo [LICENSE](LICENSE) para obter detalhes completos.
 
