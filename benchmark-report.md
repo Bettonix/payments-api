@@ -1,44 +1,44 @@
-# 📊 Relatório Executivo de Benchmark & Carga da API de Pagamentos (100k)
+# Relatório Executivo de Benchmark & Carga da API de Pagamentos (100k)
 
-> **Data da Execução:** 2026-10-05T19:03:20.235957622Z
+> **Data da Execução:** 2026-10-05T21:27:24.624924746Z
 > **Ambiente:** Local / WSL 2 (Debian 13) • Java 21 LTS (Virtual Threads)
 > **Alvo Testado:** `http://localhost:8181`
 
 ---
 
-## 🚀 Resumo Executivo
+## Resumo Executivo
 
 | Fase do Benchmark | Total Requisições | Throughput (RPS) | Latência p50 | Latência p95 | Latência p99 | Status Predominante |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1. Ingestão Assíncrona (POST /v1/payments)** | 2,000 | **883.1 req/s** | 21.70 ms | 68.43 ms | 108.40 ms | HTTP 202 Accepted (2000) |
-| **2. Replay Idempotente (Redis)** | 2,000 | **1715.4 req/s** | 11.74 ms | 25.38 ms | 91.19 ms | HTTP 200 OK (Replay) (2000) |
-| **3. Transições (POST /authorize)** | 2,000 | **1039.7 req/s** | 22.35 ms | 38.59 ms | 48.61 ms | HTTP 200 OK (2000) |
+| **1. Ingestão Assíncrona (POST /v1/payments)** | 10,000 | **689.2 req/s** | 59.52 ms | 154.56 ms | 227.01 ms | HTTP 202 Accepted (10000) |
+| **2. Replay Idempotente (Redis)** | 2,000 | **1149.9 req/s** | 36.57 ms | 97.12 ms | 128.35 ms | HTTP 200 OK (Replay) (2000) |
+| **3. Transições (POST /authorize)** | 5,000 | **622.9 req/s** | 70.65 ms | 165.45 ms | 225.27 ms | HTTP 200 OK (5000) |
 
 ---
 
-## 🔬 Análise de Performance & Resiliência Distribuída
+## Análise de Performance & Resiliência Distribuída
 
 ### 1. Ingestão Assíncrona vs Replay em Cache
-* **Latência Média de Ingestão (Redis CAS + Kafka Ingress):** `27.86 ms`
-* **Latência Média de Replay (Redis Lua CAS Hit):** `14.43 ms`
-* **Fator de Aceleração do Cache de Idempotência:** **1.9x mais rápido** que o ciclo de ingestão.
+* **Latência Média de Ingestão (Redis CAS + Kafka Ingress):** `72.21 ms`
+* **Latência Média de Replay (Redis Lua CAS Hit):** `42.98 ms`
+* **Fator de Aceleração do Cache de Idempotência:** **1.7x mais rápido** que o ciclo de ingestão.
 
 ### 2. Distribuição Completa de Percentis (Fase de Criação)
 
 | Métrica | Valor |
 | :--- | :--- |
-| **Tempo Total de Execução** | `2.26 segundos (0.0 minutos)` |
-| **Throughput Médio** | `883.1 requisições/segundo` |
-| **Latência Mínima** | `4.91 ms` |
-| **Latência p50 (Mediana)** | `21.70 ms` |
-| **Latência p90** | `52.29 ms` |
-| **Latência p95** | `68.43 ms` |
-| **Latência p99** | `108.40 ms` |
-| **Latência Máxima** | `202.22 ms` |
+| **Tempo Total de Execução** | `14.51 segundos (0.2 minutos)` |
+| **Throughput Médio** | `689.2 requisições/segundo` |
+| **Latência Mínima** | `4.58 ms` |
+| **Latência p50 (Mediana)** | `59.52 ms` |
+| **Latência p90** | `126.29 ms` |
+| **Latência p95** | `154.56 ms` |
+| **Latência p99** | `227.01 ms` |
+| **Latência Máxima** | `894.03 ms` |
 
 ---
 
-## 📡 Como Validar os Dados Gerados nos Dashboards
+## Como Validar os Dados Gerados nos Dashboards
 
 1. **Grafana LGTM** (`http://localhost:3000`):
    * Abra o dashboard **Payments API - Overview**.
