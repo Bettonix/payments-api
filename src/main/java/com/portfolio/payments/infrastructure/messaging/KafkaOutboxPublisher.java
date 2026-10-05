@@ -72,7 +72,7 @@ public class KafkaOutboxPublisher implements OutboxPublisher {
             // CloudEvents binary mode headers
             record.headers().add(new RecordHeader("ce_specversion", "1.0".getBytes(StandardCharsets.UTF_8)));
             record.headers().add(new RecordHeader("ce_id", event.id().toString().getBytes(StandardCharsets.UTF_8)));
-            record.headers().add(new RecordHeader("ce_source", "/payments-api".getBytes(StandardCharsets.UTF_8)));
+            record.headers().add(new RecordHeader("ce_source", ("/merchants/" + event.merchantId() + "/payments").getBytes(StandardCharsets.UTF_8)));
             record.headers().add(new RecordHeader("ce_type", ("com.portfolio.payments." + event.eventType().toLowerCase() + ".v1").getBytes(StandardCharsets.UTF_8)));
             record.headers().add(new RecordHeader("ce_subject", key.getBytes(StandardCharsets.UTF_8)));
             record.headers().add(new RecordHeader("ce_time", event.createdAt().toString().getBytes(StandardCharsets.UTF_8)));

@@ -53,6 +53,27 @@ class KafkaOutboxPublisherTest {
     }
 
     @Test
+    void assertsCloudEventsHeadersFormat() {
+        RecordMetadata metadata = new RecordMetadata(new TopicPartition("test.topic", 0), 0, 0, 0, 0, 0);
+        SendResult<String, String> sendResult = new SendResult<>(new ProducerRecord<>("test.topic", "key", "val"), metadata);
+        CompletableFuture<SendResult<String, String>> future = CompletableFuture.completedFuture(sendResult);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<ProducerRecord<String, String>> captor = org.mockito.ArgumentCaptor.forClass(ProducerRecord.class);
+        when(kafka.send(captor.capture())).thenReturn(future);
+
+        publisher.publish(event);
+
+        ProducerRecord<String, String> record = captor.getValue();
+        assertEquals("test.topic", record.topic());
+        assertEquals(event.aggregateId().toString(), record.key());
+        assertEquals("1.0", new String(record.headers().lastHeader("ce_specversion").value(), java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals(event.id().toString(), new String(record.headers().lastHeader("ce_id").value(), java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("com.portfolio.payments.paymentcreated.v1", new String(record.headers().lastHeader("ce_type").value(), java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("/merchants/" + event.merchantId() + "/payments", new String(record.headers().lastHeader("ce_source").value(), java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    @Test
     void returnsRetryableOnTimeout() {
         CompletableFuture<SendResult<String, String>> future = new CompletableFuture<>();
         when(kafka.send(any(ProducerRecord.class))).thenReturn(future);
